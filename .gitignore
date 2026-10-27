@@ -1,0 +1,13 @@
+.DS_Store
+*.pyc
+*.py~
+*.egg-info
+*.swp
+__pycache__/
+tags
+node_modules
+vertex_outreach/docs/current
+vertex_outreach/public/dist
+
+# Test fixtures (generated locally, may contain sample addresses)
+test_fixtures/

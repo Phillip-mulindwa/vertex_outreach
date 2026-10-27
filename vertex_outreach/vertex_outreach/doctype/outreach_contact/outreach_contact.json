@@ -1,0 +1,120 @@
+{
+ "actions": [],
+ "autoname": "field:email",
+ "creation": "2026-10-27 12:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "email",
+  "domain",
+  "status",
+  "column_break_1",
+  "organization",
+  "source",
+  "uploaded_by",
+  "email_upload",
+  "last_contacted_on"
+ ],
+ "fields": [
+  {
+   "fieldname": "email",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Email",
+   "options": "Email",
+   "reqd": 1
+  },
+  {
+   "fieldname": "domain",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "Domain",
+   "read_only": 1,
+   "search_index": 1
+  },
+  {
+   "default": "New",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "New\nContacted\nReplied\nSigned Partner\nBounced\nUnsubscribed",
+   "search_index": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "organization",
+   "fieldtype": "Data",
+   "label": "Organization"
+  },
+  {
+   "fieldname": "source",
+   "fieldtype": "Data",
+   "in_standard_filter": 1,
+   "label": "Source"
+  },
+  {
+   "fieldname": "uploaded_by",
+   "fieldtype": "Link",
+   "in_standard_filter": 1,
+   "label": "Uploaded By",
+   "options": "User"
+  },
+  {
+   "fieldname": "email_upload",
+   "fieldtype": "Link",
+   "label": "Email Upload",
+   "options": "Email Upload"
+  },
+  {
+   "fieldname": "last_contacted_on",
+   "fieldtype": "Datetime",
+   "label": "Last Contacted On"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-10-27 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Vertex Outreach",
+ "name": "Outreach Contact",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Outreach User",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "show_title_field_in_link": 0,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "email",
+ "track_changes": 0
+}
