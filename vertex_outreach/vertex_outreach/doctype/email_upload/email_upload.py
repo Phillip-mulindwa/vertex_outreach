@@ -10,16 +10,13 @@ from frappe.model.document import Document
 from frappe.utils import now
 
 from vertex_outreach.contacts import (
-	CONTACT,
-	PARTNER_DOMAIN,
-	bulk_insert_ignore,
-	chunks,
 	claimed_by,
 	existing_contacts,
 	insert_contacts,
-	partner_domains,
+	mark_contacts_signed,
+	upsert_signed_partner_records,
 )
-from vertex_outreach.emails import FREE_MAIL_DOMAINS, email_domain, extract_text, find_emails
+from vertex_outreach.emails import email_domain, extract_text, find_emails, find_partner_emails
 
 JOB_TIMEOUT = 60 * 60
 
@@ -50,7 +47,12 @@ def process_upload(upload_name: str):
 		doc.db_set("status", "Processing", notify=True, commit=True)
 
 		filename, content = _read_attachment(doc)
-		emails, invalid_count = find_emails(extract_text(filename, content))
+		if doc.upload_type == "Signed Partners":
+			partners, invalid_count = find_partner_emails(filename, content)
+			emails = list(partners)
+		else:
+			partners = None
+			emails, invalid_count = find_emails(extract_text(filename, content))
 		if not emails:
 			frappe.throw(
 				_(
@@ -59,12 +61,14 @@ def process_upload(upload_name: str):
 				).format(filename)
 			)
 
-		handler = {
-			"Signed Partners": _process_signed_partners,
-			"Already Contacted": _process_already_contacted,
-			"Scraped Leads": _process_scraped_leads,
-		}[doc.upload_type]
-		counts = handler(doc, emails)
+		if partners is not None:
+			counts = _process_signed_partners(doc, partners)
+		else:
+			handler = {
+				"Already Contacted": _process_already_contacted,
+				"Scraped Leads": _process_scraped_leads,
+			}[doc.upload_type]
+			counts = handler(doc, emails)
 
 		doc.db_set(
 			{
@@ -99,30 +103,14 @@ def _read_attachment(doc) -> tuple[str, bytes | str]:
 	return file_doc.file_name or doc.file, file_doc.get_content()
 
 
-def _process_signed_partners(doc, emails: list[str]) -> dict:
-	existing = existing_contacts(emails)
-	new = [e for e in emails if e not in existing]
-	to_update = [e for e, status in existing.items() if status != "Signed Partner"]
-
-	insert_contacts(new, "Signed Partner", user=doc.owner, source=doc.source, email_upload=doc.name)
-	for chunk in chunks(to_update):
-		frappe.db.set_value(CONTACT, {"name": ["in", chunk]}, "status", "Signed Partner")
-
-	domains = sorted({email_domain(e) for e in emails} - FREE_MAIL_DOMAINS)
-	known_domains = partner_domains(domains)
-	new_domains = [d for d in domains if d not in known_domains]
-	if new_domains:
-		ts = now()
-		bulk_insert_ignore(
-			PARTNER_DOMAIN,
-			["name", "domain", "owner", "modified_by", "creation", "modified"],
-			((d, d, doc.owner, doc.owner, ts, ts) for d in new_domains),
-		)
-
+def _process_signed_partners(doc, partners: dict[str, str | None]) -> dict:
+	"""partners: {email: organization or None}. Upgrades/creates contacts and Signed Partner records."""
+	new, upgraded = mark_contacts_signed(partners, user=doc.owner, source=doc.source, email_upload=doc.name)
+	created, _updated = upsert_signed_partner_records(partners, user=doc.owner)
 	return {
 		"new_count": len(new),
-		"duplicate_count": len(existing),
-		"partner_count": len(new_domains),
+		"duplicate_count": len(upgraded),
+		"partner_count": len(created),
 		"clean_file": None,
 	}
 
@@ -141,11 +129,10 @@ def _process_already_contacted(doc, emails: list[str]) -> dict:
 
 def _process_scraped_leads(doc, emails: list[str]) -> dict:
 	existing = existing_contacts(emails)
-	blocked_domains = partner_domains(email_domain(e) for e in emails)
 
 	fresh, partner_count, duplicate_count = [], 0, 0
 	for e in emails:
-		if existing.get(e) == "Signed Partner" or email_domain(e) in blocked_domains:
+		if existing.get(e) == "Signed Partner":
 			partner_count += 1
 		elif e in existing:
 			duplicate_count += 1

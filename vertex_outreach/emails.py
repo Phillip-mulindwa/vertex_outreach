@@ -3,6 +3,7 @@
 
 """Text extraction, email discovery and normalization for outreach uploads."""
 
+import csv
 import io
 import re
 
@@ -21,33 +22,39 @@ MAX_EMAIL_LENGTH = 140
 
 GMAIL_DOMAINS = {"gmail.com", "googlemail.com"}
 
-_FREE_MAIL_BASES = (
-	"gmail",
-	"googlemail",
-	"yahoo",
-	"hotmail",
-	"outlook",
-	"live",
-	"icloud",
-	"aol",
-	"proton",
-	"protonmail",
-	"btinternet",
-	"sky",
-	"msn",
-)
-FREE_MAIL_DOMAINS = frozenset(
-	[f"{b}.com" for b in _FREE_MAIL_BASES] + [f"{b}.co.uk" for b in _FREE_MAIL_BASES] + ["proton.me"]
-)
+EMAIL_HEADERS = {"email", "e-mail", "email address", "e-mail address", "emails"}
+ORGANIZATION_HEADERS = {
+	"organization",
+	"organisation",
+	"company",
+	"organization name",
+	"organisation name",
+	"company name",
+}
+HEADER_SCAN_ROWS = 20
+MAX_ORGANIZATION_LENGTH = 140
+
+
+def _extension(filename: str) -> str:
+	return filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+
+def _as_bytes(content: bytes | str) -> bytes:
+	# File.get_content() returns str when the bytes happen to decode as utf-8
+	return content.encode("utf-8") if isinstance(content, str) else content
+
+
+def _as_text(content: bytes | str) -> str:
+	if isinstance(content, str):
+		return content.lstrip("\ufeff")
+	return content.decode("utf-8-sig", errors="ignore")
 
 
 def extract_text(filename: str, content: bytes | str) -> str:
 	"""Return all readable text from an uploaded file, chosen by extension."""
-	ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-
-	if ext in ("pdf", "xlsx", "xlsm") and isinstance(content, str):
-		# File.get_content() returns str when the bytes happen to decode as utf-8
-		content = content.encode("utf-8")
+	ext = _extension(filename)
+	if ext in ("pdf", "xlsx", "xlsm"):
+		content = _as_bytes(content)
 
 	if ext == "pdf":
 		from pypdf import PdfReader
@@ -68,9 +75,78 @@ def extract_text(filename: str, content: bytes | str) -> str:
 		finally:
 			wb.close()
 
-	if isinstance(content, str):
-		return content.lstrip("﻿")
-	return content.decode("utf-8-sig", errors="ignore")
+	return _as_text(content)
+
+
+def extract_tables(filename: str, content: bytes | str) -> list[list[tuple]] | None:
+	"""Rows of each sheet for CSV/XLSX/XLSM files; None for formats without columns."""
+	ext = _extension(filename)
+	if ext == "csv":
+		text = _as_text(content)
+		try:
+			dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t|")
+		except csv.Error:
+			dialect = csv.excel
+		return [[tuple(row) for row in csv.reader(io.StringIO(text), dialect)]]
+
+	if ext in ("xlsx", "xlsm"):
+		from openpyxl import load_workbook
+
+		wb = load_workbook(io.BytesIO(_as_bytes(content)), read_only=True, data_only=True)
+		try:
+			return [list(ws.iter_rows(values_only=True)) for ws in wb.worksheets]
+		finally:
+			wb.close()
+	return None
+
+
+def find_partner_emails(filename: str, content: bytes | str) -> tuple[dict[str, str | None], int]:
+	"""Emails with their organization, for Signed Partner uploads.
+
+	For each CSV/XLSX sheet with a header row naming an email column and an
+	organization/organisation/company column, read the pairs from those columns. Otherwise
+	(other sheets, other formats) extract every email, with no organization.
+	Returns ({normalized email: organization or None}, count of distinct invalid candidates).
+	"""
+	tables = extract_tables(filename, content)
+	if tables is None:
+		emails, invalid_count = find_emails(extract_text(filename, content))
+		return dict.fromkeys(emails), invalid_count
+
+	partners: dict[str, str | None] = {}
+	invalid: set[str] = set()
+	for rows in tables:
+		header = _find_partner_header(rows)
+		if header is None:
+			text = "\n".join(" ".join(str(v) for v in row if v is not None) for row in rows)
+			found = [(original, email, None) for original, email in scan_emails(text)]
+		else:
+			header_row, email_col, org_col = header
+			found = []
+			for row in rows[header_row + 1 :]:
+				email_cell = row[email_col] if email_col < len(row) else None
+				org_cell = row[org_col] if org_col < len(row) else None
+				organization = str(org_cell).strip()[:MAX_ORGANIZATION_LENGTH] if org_cell is not None else ""
+				for original, email in scan_emails(str(email_cell or "")):
+					found.append((original, email, organization or None))
+
+		for original, email, organization in found:
+			if not email:
+				invalid.add(original.lower())
+			elif email not in partners or (organization and not partners[email]):
+				partners[email] = organization
+	return partners, len(invalid)
+
+
+def _find_partner_header(rows: list[tuple]) -> tuple[int, int, int] | None:
+	"""(row index, email column, organization column) of the first header row, if any."""
+	for i, row in enumerate(rows[:HEADER_SCAN_ROWS]):
+		cells = [str(v).strip().lower() if v is not None else "" for v in row]
+		email_col = next((c for c, v in enumerate(cells) if v in EMAIL_HEADERS), None)
+		org_col = next((c for c, v in enumerate(cells) if v in ORGANIZATION_HEADERS), None)
+		if email_col is not None and org_col is not None:
+			return i, email_col, org_col
+	return None
 
 
 def normalize_email(raw: str) -> str | None:

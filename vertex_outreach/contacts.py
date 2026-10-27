@@ -9,12 +9,12 @@ what "already in the system" means.
 
 import frappe
 from frappe import _
-from frappe.utils import getdate, now
+from frappe.utils import getdate, now, today
 
 from vertex_outreach.emails import email_domain
 
 CONTACT = "Outreach Contact"
-PARTNER_DOMAIN = "Partner Domain"
+SIGNED_PARTNER_DOCTYPE = "Signed Partner"
 CHUNK_SIZE = 1000
 INSERT_CHUNK_SIZE = 5000
 
@@ -31,6 +31,7 @@ CONTACT_FIELDS = [
 	"modified_by",
 	"creation",
 	"modified",
+	"organization",
 ]
 
 
@@ -54,14 +55,6 @@ def existing_contacts(emails: list[str], fields: list[str] | None = None) -> dic
 	return existing
 
 
-def partner_domains(domains) -> set[str]:
-	domains = sorted(set(domains))
-	found = set()
-	for chunk in chunks(domains):
-		found.update(frappe.get_all(PARTNER_DOMAIN, filters={"name": ["in", chunk]}, pluck="name"))
-	return found
-
-
 def insert_contacts(
 	emails: list[str],
 	status: str,
@@ -71,6 +64,7 @@ def insert_contacts(
 	email_upload: str | None = None,
 	last_contacted_on=None,
 	timestamp=None,
+	organizations: dict[str, str | None] | None = None,
 ):
 	"""Bulk insert contacts, skipping any email that already exists. Returns the timestamp used."""
 	ts = timestamp or now()
@@ -89,11 +83,68 @@ def insert_contacts(
 				user,
 				ts,
 				ts,
+				(organizations or {}).get(e),
 			)
 			for e in emails
 		)
 		bulk_insert_ignore(CONTACT, CONTACT_FIELDS, rows)
 	return ts
+
+
+def mark_contacts_signed(
+	partners: dict[str, str | None], *, user: str, source: str | None = None, email_upload: str | None = None
+) -> tuple[list[str], list[str]]:
+	"""Make every email in `partners` (email -> organization) a Signed Partner contact.
+
+	New emails are inserted; existing contacts are upgraded whatever their old status, keeping
+	their organization when none is given. Returns (inserted, upgraded).
+	"""
+	emails = list(partners)
+	existing = existing_contacts(emails)
+	new = [e for e in emails if e not in existing]
+	insert_contacts(new, "Signed Partner", user=user, source=source, email_upload=email_upload, organizations=partners)
+	upgraded = [e for e in emails if e in existing]
+	bulk_update_with_organization(CONTACT, upgraded, partners, {"status": "Signed Partner"})
+	return new, upgraded
+
+
+def upsert_signed_partner_records(partners: dict[str, str | None], *, user: str) -> tuple[list[str], list[str]]:
+	"""Create a Signed Partner record per email, or update its organization. Returns (created, updated)."""
+	emails = list(partners)
+	known = set()
+	for chunk in chunks(emails):
+		known.update(frappe.get_all(SIGNED_PARTNER_DOCTYPE, filters={"name": ["in", chunk]}, pluck="name"))
+	created = [e for e in emails if e not in known]
+	ts = now()
+	bulk_insert_ignore(
+		SIGNED_PARTNER_DOCTYPE,
+		["name", "email", "organization", "signed_on", "owner", "modified_by", "creation", "modified"],
+		((e, e, partners[e], today(), user, user, ts, ts) for e in created),
+	)
+	updated = [e for e in emails if e in known]
+	bulk_update_with_organization(SIGNED_PARTNER_DOCTYPE, [e for e in updated if partners[e]], partners, {})
+	return created, updated
+
+
+def bulk_update_with_organization(doctype: str, names: list[str], organizations: dict, values: dict):
+	"""UPDATE in chunks: set `values` on every row, and organization per row where one is given."""
+	ts, user = now(), frappe.session.user
+	for chunk in chunks(names):
+		sets, params = [], []
+		for field, value in values.items():
+			sets.append(f"`{field}` = %s")
+			params.append(value)
+		with_org = [n for n in chunk if organizations.get(n)]
+		if with_org:
+			sets.append("`organization` = CASE `name` " + " ".join(["WHEN %s THEN %s"] * len(with_org)) + " ELSE `organization` END")
+			for n in with_org:
+				params += [n, organizations[n]]
+		sets += ["`modified` = %s", "`modified_by` = %s"]
+		params += [ts, user]
+		frappe.db.sql(
+			f"UPDATE `tab{doctype}` SET {', '.join(sets)} WHERE `name` IN ({', '.join(['%s'] * len(chunk))})",
+			params + chunk,
+		)
 
 
 def claimed_by(emails: list[str], **filters) -> set[str]:
@@ -132,33 +183,41 @@ DO_NOT_CONTACT = "DO NOT CONTACT"
 INVALID = "INVALID"
 
 DO_NOT_CONTACT_STATUSES = ("Unsubscribed", "Bounced")
-DETAIL_FIELDS = ["status", "uploaded_by", "owner", "last_contacted_on", "creation", "source", "email_upload"]
+DETAIL_FIELDS = [
+	"status",
+	"organization",
+	"uploaded_by",
+	"owner",
+	"last_contacted_on",
+	"creation",
+	"source",
+	"email_upload",
+]
 
 
 def classify_emails(emails: list[str]) -> dict[str, dict]:
 	"""Verdict plus who/when details for normalized emails, using chunked lookups only."""
 	existing = existing_contacts(emails, fields=DETAIL_FIELDS)
-	blocked = partner_domains(email_domain(e) for e in emails)
 	names = full_names({r.uploaded_by or r.owner for r in existing.values()})
 
 	result = {}
 	for email in emails:
-		domain = email_domain(email)
 		row = existing.get(email)
 		if row and row.status in DO_NOT_CONTACT_STATUSES:
 			verdict = DO_NOT_CONTACT
-		elif (row and row.status == "Signed Partner") or domain in blocked:
+		elif row and row.status == "Signed Partner":
 			verdict = SIGNED_PARTNER
 		elif row:
 			verdict = ALREADY_CONTACTED
 		else:
 			verdict = FRESH
 
-		info = {"verdict": verdict, "partner_domain": domain if domain in blocked else None}
+		info = {"verdict": verdict}
 		if row:
 			user = row.uploaded_by or row.owner
 			info.update(
 				status=row.status,
+				organization=row.organization,
 				contacted_by=user,
 				contacted_by_name=names.get(user, user),
 				contacted_on=row.last_contacted_on or row.creation,
@@ -183,6 +242,11 @@ def full_names(users) -> dict[str, str]:
 def describe_existing(info: dict) -> str:
 	"""e.g. 'Already contacted on 12 Oct 2026 by Grace Achieng (status: Contacted, upload UPL-00004)'"""
 	when = getdate(info["contacted_on"]).strftime("%-d %b %Y") if info.get("contacted_on") else None
+	if info["status"] == "Signed Partner":
+		partner = _("Already a signed partner")
+		if info.get("organization"):
+			partner += f" ({info['organization']})"
+		return partner + (", " + _("recorded on {0} by {1}").format(when, info["contacted_by_name"]) if when else "")
 	details = _("status: {0}").format(_(info["status"]))
 	if info.get("email_upload"):
 		details += ", " + _("upload {0}").format(info["email_upload"])

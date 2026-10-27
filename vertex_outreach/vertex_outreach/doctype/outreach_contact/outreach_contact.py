@@ -5,7 +5,7 @@ import frappe
 from frappe import _
 from frappe.model.document import Document
 
-from vertex_outreach.contacts import classify_emails, describe_existing, partner_domains
+from vertex_outreach.contacts import classify_emails, describe_existing
 from vertex_outreach.emails import email_domain, normalize_email
 
 
@@ -27,6 +27,3 @@ class OutreachContact(Document):
 				title=_("Already in the system"),
 				exc=frappe.DuplicateEntryError,
 			)
-
-		if self.status != "Signed Partner" and partner_domains([self.domain]):
-			frappe.throw(_("Signed partner: {0}").format(self.domain), title=_("Signed partner"))

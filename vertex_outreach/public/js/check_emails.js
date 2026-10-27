@@ -62,15 +62,18 @@ vertex_outreach.render_check_results = function (data, $results) {
 			const upload = r.email_upload
 				? `<a href="/app/email-upload/${encodeURIComponent(r.email_upload)}">${esc(r.email_upload)}</a>`
 				: "";
-			let status = r.status ? esc(__(r.status)) : "";
-			if (r.partner_domain) status += `${status ? "<br>" : ""}<span class="text-muted small">${__(
-				"Partner domain"
-			)}: ${esc(r.partner_domain)}</span>`;
+			const status = r.status ? esc(__(r.status)) : "";
+			const organization = r.organization
+				? r.verdict === "SIGNED PARTNER"
+					? `<b>${esc(r.organization)}</b>`
+					: esc(r.organization)
+				: "";
 			const normalized =
 				r.email && r.email !== r.original ? `<div class="text-muted small">→ ${esc(r.email)}</div>` : "";
 			return `<tr>
 				<td>${esc(r.original)}${normalized}</td>
 				<td>${verdict}</td>
+				<td>${organization}</td>
 				<td>${status}</td>
 				<td>${who}</td>
 				<td>${when}</td>
@@ -91,10 +94,10 @@ vertex_outreach.render_check_results = function (data, $results) {
 		<div style="overflow-x: auto;">
 			<table class="table table-bordered table-sm" style="font-size: var(--text-sm);">
 				<thead><tr>
-					<th>${__("Email")}</th><th>${__("Verdict")}</th><th>${__("Status")}</th>
+					<th>${__("Email")}</th><th>${__("Verdict")}</th><th>${__("Organization")}</th><th>${__("Status")}</th>
 					<th>${__("Contacted by")}</th><th>${__("When")}</th><th>${__("Source")}</th><th>${__("Upload")}</th>
 				</tr></thead>
-				<tbody>${rows || `<tr><td colspan="7" class="text-muted">${__("No emails found in the text")}</td></tr>`}</tbody>
+				<tbody>${rows || `<tr><td colspan="8" class="text-muted">${__("No emails found in the text")}</td></tr>`}</tbody>
 			</table>
 		</div>`);
 	$results.find(".vo-copy-fresh").on("click", () => frappe.utils.copy_to_clipboard(fresh.join("\n")));

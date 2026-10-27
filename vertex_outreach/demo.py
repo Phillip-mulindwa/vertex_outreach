@@ -16,7 +16,12 @@ from datetime import timedelta
 import frappe
 from frappe.utils import now_datetime
 
-from vertex_outreach.contacts import CONTACT, CONTACT_FIELDS, PARTNER_DOMAIN, bulk_insert_ignore
+from vertex_outreach.contacts import (
+	CONTACT,
+	CONTACT_FIELDS,
+	SIGNED_PARTNER_DOCTYPE,
+	bulk_insert_ignore,
+)
 
 DEMO_SOURCE = "Demo data"
 
@@ -25,6 +30,8 @@ USERS = [
 	("daniel.okafor@example.com", "Daniel", "Okafor"),
 	("amina.hassan@example.com", "Amina", "Hassan"),
 ]
+# Grace also manages the Signed Partner list
+MANAGERS = {"grace.achieng@example.com"}
 
 PARTNERS = [
 	("lakeside-health.example", "Lakeside Health Group"),
@@ -63,17 +70,12 @@ def load():
 				"last_name": last,
 				"send_welcome_email": 0,
 				"enabled": 1,
-				"roles": [{"role": "Outreach User"}],
+				"roles": [{"role": "Outreach User"}]
+				+ ([{"role": "Outreach Manager"}] if email in MANAGERS else []),
 			}
 		)
 		user.flags.no_welcome_mail = True
 		user.insert(ignore_permissions=True)
-
-	bulk_insert_ignore(
-		PARTNER_DOMAIN,
-		["name", "domain", "organization", "owner", "modified_by", "creation", "modified"],
-		[(d, d, org, "Administrator", "Administrator", now, now) for d, org in PARTNERS],
-	)
 
 	def address(domain):
 		if rng.random() < 0.4:
@@ -115,6 +117,7 @@ def load():
 		upload = _make_upload(owner, upload_type, source, now - timedelta(days=days_ago), batches[i])
 		upload_of.update({email: upload for email in batches[i]})
 
+	organization_of = dict(PARTNERS)
 	rows = []
 	for email, status, user, contacted_on in contacts:
 		upload = upload_of.get(email)
@@ -134,14 +137,25 @@ def load():
 				user,
 				contacted_on,
 				contacted_on,
+				organization_of.get(email.split("@")[1]),
 			)
 		)
 	bulk_insert_ignore(CONTACT, CONTACT_FIELDS, rows)
 
+	partners = [r for r in rows if r[3] == "Signed Partner"]
+	bulk_insert_ignore(
+		SIGNED_PARTNER_DOCTYPE,
+		["name", "email", "organization", "signed_on", "notes", "owner", "modified_by", "creation", "modified"],
+		[
+			(r[0], r[0], r[12], r[7].date(), DEMO_SOURCE, "grace.achieng@example.com", "grace.achieng@example.com", r[7], r[7])
+			for r in partners
+		],
+	)
+
 	frappe.db.commit()
 	return {
 		"users": [u[0] for u in USERS],
-		"partner_domains": [d for d, _org in PARTNERS],
+		"signed_partners": len(partners),
 		"contacts": len(rows),
 		"email_uploads": sorted({u.name for u in upload_of.values()}),
 	}
@@ -159,7 +173,11 @@ def clear():
 
 	contacts = frappe.db.count(CONTACT, {"domain": ["in", DEMO_DOMAINS]})
 	frappe.db.delete(CONTACT, {"domain": ["in", DEMO_DOMAINS]})
-	frappe.db.delete(PARTNER_DOMAIN, {"name": ["in", [d for d, _org in PARTNERS]]})
+	partners = 0
+	for domain in DEMO_DOMAINS:
+		filters = {"name": ["like", f"%@{domain}"]}
+		partners += frappe.db.count(SIGNED_PARTNER_DOCTYPE, filters)
+		frappe.db.delete(SIGNED_PARTNER_DOCTYPE, filters)
 
 	users = []
 	for email, _first, _last in USERS:
@@ -168,7 +186,7 @@ def clear():
 			users.append(email)
 
 	frappe.db.commit()
-	return {"email_uploads": uploads, "users": users, "contacts_deleted": contacts}
+	return {"email_uploads": uploads, "users": users, "contacts_deleted": contacts, "signed_partners_deleted": partners}
 
 
 def _make_upload(owner, upload_type, source, created, emails):

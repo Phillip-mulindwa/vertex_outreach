@@ -12,6 +12,18 @@ bench get-app $URL_OF_THIS_REPO --branch main
 bench install-app vertex_outreach
 ```
 
+### Signed partners
+
+Partners are tracked per email, in the **Signed Partner** list (System Manager and Outreach
+Manager can edit it; Outreach User can read it). Saving a partner marks the matching Outreach
+Contact as Signed Partner (creating it if needed); deleting one sets the contact back to Contacted.
+Partner status everywhere (uploads, Check Emails, manual entry) comes from
+`Outreach Contact.status == "Signed Partner"`.
+
+A **Signed Partners** Email Upload creates or updates a Signed Partner per email. In CSV/XLSX
+files, a header row with an `email` column and an `organization` / `organisation` / `company`
+column is read as pairs; otherwise every email is extracted with no organization.
+
 ### Checking emails
 
 - **Outreach Contact list → Check Emails**, or the **Check Emails** shortcut in the Outreach workspace:
