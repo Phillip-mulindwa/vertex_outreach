@@ -1,6 +1,6 @@
 {
  "charts": [],
- "content": "[{\"id\":\"hdr0000001\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Outreach</b></span>\",\"col\":12}},{\"id\":\"shortcut00\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Email Upload\",\"col\":4}},{\"id\":\"shortcut01\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Outreach Contact\",\"col\":4}},{\"id\":\"shortcut02\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Partner Domain\",\"col\":4}}]",
+ "content": "[{\"id\":\"hdr0000001\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Outreach</b></span>\",\"col\":12}},{\"id\":\"shortcutck\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Check Emails\",\"col\":3}},{\"id\":\"shortcut00\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Email Upload\",\"col\":3}},{\"id\":\"shortcut01\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Outreach Contact\",\"col\":3}},{\"id\":\"shortcut02\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Partner Domain\",\"col\":3}}]",
  "creation": "2026-10-27 12:00:00.000000",
  "custom_blocks": [],
  "docstatus": 0,
@@ -12,7 +12,7 @@
  "is_hidden": 0,
  "label": "Outreach",
  "links": [],
- "modified": "2026-10-27 12:00:00.000000",
+ "modified": "2026-10-27 13:00:00.000000",
  "modified_by": "Administrator",
  "module": "Vertex Outreach",
  "name": "Outreach",
@@ -25,6 +25,12 @@
  "roles": [],
  "sequence_id": 50.0,
  "shortcuts": [
+  {
+   "color": "Green",
+   "label": "Check Emails",
+   "link_to": "check-emails",
+   "type": "Page"
+  },
   {
    "color": "Grey",
    "doc_view": "List",

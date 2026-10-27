@@ -8,8 +8,23 @@ You can install this app using the [bench](https://github.com/frappe/bench) CLI:
 
 ```bash
 cd $PATH_TO_YOUR_BENCH
-bench get-app $URL_OF_THIS_REPO --branch develop
+bench get-app $URL_OF_THIS_REPO --branch main
 bench install-app vertex_outreach
+```
+
+### Checking emails
+
+- **Outreach Contact list → Check Emails**, or the **Check Emails** shortcut in the Outreach workspace:
+  paste emails in any format, then **Check**, or **Check & Claim Fresh** to record the fresh ones as
+  Contacted by you.
+- API: `POST /api/method/vertex_outreach.api.check_emails` with `emails` (text) and `claim` (0/1).
+  Available to Outreach User and System Manager.
+
+### Demo data
+
+```bash
+bench --site <site> execute vertex_outreach.demo.load   # replaces any previous demo data
+bench --site <site> execute vertex_outreach.demo.clear  # removes only the demo data
 ```
 
 ### Contributing

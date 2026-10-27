@@ -1,0 +1,27 @@
+{
+ "content": null,
+ "creation": "2026-10-27 13:00:00.000000",
+ "docstatus": 0,
+ "doctype": "Page",
+ "icon": "mail",
+ "idx": 0,
+ "modified": "2026-10-27 13:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Vertex Outreach",
+ "name": "check-emails",
+ "owner": "Administrator",
+ "page_name": "check-emails",
+ "roles": [
+  {
+   "role": "Outreach User"
+  },
+  {
+   "role": "System Manager"
+  }
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "system_page": 0,
+ "title": "Check Emails"
+}

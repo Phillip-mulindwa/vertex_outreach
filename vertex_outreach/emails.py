@@ -103,6 +103,17 @@ def normalize_email(raw: str) -> str | None:
 	return email
 
 
+def scan_emails(text: str) -> list[tuple[str, str | None]]:
+	"""Every distinct email-like string in `text` as (original, normalized or None if invalid),
+	in first-seen order."""
+	seen: dict[str, str | None] = {}
+	for match in CANDIDATE_RE.findall(text):
+		original = match.strip(STRIP_CHARS)
+		if original not in seen:
+			seen[original] = normalize_email(original)
+	return list(seen.items())
+
+
 def find_emails(text: str) -> tuple[list[str], int]:
 	"""Find addresses anywhere in `text`.
 
@@ -110,12 +121,11 @@ def find_emails(text: str) -> tuple[list[str], int]:
 	"""
 	valid: dict[str, None] = {}
 	invalid: set[str] = set()
-	for match in CANDIDATE_RE.findall(text):
-		email = normalize_email(match)
+	for original, email in scan_emails(text):
 		if email:
 			valid[email] = None
 		else:
-			invalid.add(match.strip(STRIP_CHARS).lower())
+			invalid.add(original.lower())
 	return list(valid), len(invalid)
 
 
