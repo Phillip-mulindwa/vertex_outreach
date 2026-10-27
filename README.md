@@ -20,6 +20,19 @@ bench install-app vertex_outreach
 - API: `POST /api/method/vertex_outreach.api.check_emails` with `emails` (text) and `claim` (0/1).
   Available to Outreach User and System Manager.
 
+### Bulk import a folder
+
+Every .csv / .xlsx / .xlsm / .pdf / .txt file under the folder (recursively) becomes its own
+Email Upload, processed one at a time with a progress line per file:
+
+```bash
+bench --site <site> execute vertex_outreach.bulk.import_folder \
+  --kwargs "{'path': '/path/to/folder', 'upload_type': 'Already Contacted'}"
+```
+
+`upload_type` is `Already Contacted` (default), `Scraped Leads` or `Signed Partners`;
+`source` defaults to each file's name.
+
 ### Demo data
 
 ```bash
