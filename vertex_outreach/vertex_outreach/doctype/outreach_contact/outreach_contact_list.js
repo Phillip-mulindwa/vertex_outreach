@@ -4,20 +4,32 @@
 frappe.listview_settings["Outreach Contact"] = {
 	get_indicator(doc) {
 		const colours = {
-			New: "gray",
+			Claimed: "yellow",
 			Contacted: "orange",
 			Replied: "green",
+			"In Discussion": "cyan",
 			"Signed Partner": "blue",
+			"Not Interested": "gray",
 			Bounced: "red",
 			Unsubscribed: "red",
 		};
 		return [__(doc.status), colours[doc.status] || "gray", `status,=,${doc.status}`];
 	},
 	onload(listview) {
-		if (vertex_outreach.can_check_emails()) {
-			listview.page.add_inner_button(__("Check Emails"), () =>
-				vertex_outreach.show_check_emails_dialog()
+		if (vertex_outreach.can_check_leads()) {
+			listview.page.add_inner_button(__("Check Leads"), () =>
+				vertex_outreach.show_check_leads_dialog()
 			);
 		}
+		listview.page.add_actions_menu_item(
+			__("Mark as Contacted"),
+			() => {
+				const names = listview.get_checked_items(true);
+				if (names.length) {
+					vertex_outreach.mark_contacted(names).then(() => listview.refresh());
+				}
+			},
+			false
+		);
 	},
 };

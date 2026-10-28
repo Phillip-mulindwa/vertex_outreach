@@ -6,8 +6,8 @@ from frappe import _
 from frappe.model.document import Document
 from frappe.utils import getdate, today
 
-from vertex_outreach.contacts import CONTACT, mark_contacts_signed
-from vertex_outreach.emails import normalize_email
+from vertex_outreach.contacts import CONTACT, CONTACTED, SIGNED, mark_leads_signed
+from vertex_outreach.identifiers import LeadInput, normalize_email
 
 
 class SignedPartner(Document):
@@ -19,7 +19,9 @@ class SignedPartner(Document):
 		self._normalize_email()
 		self.signed_on = self.signed_on or today()
 		if self.is_new() and frappe.db.exists(self.doctype, self.email):
-			existing = frappe.db.get_value(self.doctype, self.email, ["organization", "signed_on"], as_dict=True)
+			existing = frappe.db.get_value(
+				self.doctype, self.email, ["organization", "signed_on"], as_dict=True
+			)
 			frappe.throw(
 				_("{0} is already a signed partner ({1}, signed {2}).").format(
 					self.email,
@@ -31,11 +33,13 @@ class SignedPartner(Document):
 			)
 
 	def on_update(self):
-		mark_contacts_signed({self.email: self.organization}, user=frappe.session.user, source="Signed Partner")
+		lead = LeadInput(input=self.email, email=self.email, organization=self.organization)
+		mark_leads_signed([lead], user=frappe.session.user, source="Signed Partner")
 
 	def on_trash(self):
-		if frappe.db.get_value(CONTACT, self.email, "status") == "Signed Partner":
-			frappe.db.set_value(CONTACT, self.email, "status", "Contacted")
+		lead = frappe.db.get_value(CONTACT, {"email": self.email}, ["name", "status"], as_dict=True)
+		if lead and lead.status == SIGNED:
+			frappe.db.set_value(CONTACT, lead.name, "status", CONTACTED)
 
 	def _normalize_email(self):
 		email = normalize_email(self.email or "")

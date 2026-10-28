@@ -1,0 +1,76 @@
+{
+ "actions": [],
+ "creation": "2026-10-28 12:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "release_claimed_after_days",
+  "column_break_1",
+  "excluded_countries_section",
+  "excluded_countries"
+ ],
+ "fields": [
+  {
+   "default": "14",
+   "description": "A daily job deletes leads still Claimed (never contacted) this many days after they were claimed, so anyone can claim them again. 0 turns this off.",
+   "fieldname": "release_claimed_after_days",
+   "fieldtype": "Int",
+   "label": "Release Claimed Leads After (Days)",
+   "non_negative": 1
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Leads with a WhatsApp number, email domain (.ug, .za, ...) or country here get the verdict EXCLUDED COUNTRY: they cannot be claimed and are left out of Scraped Leads clean files.",
+   "fieldname": "excluded_countries_section",
+   "fieldtype": "Section Break",
+   "label": "Excluded Countries"
+  },
+  {
+   "fieldname": "excluded_countries",
+   "fieldtype": "Table",
+   "label": "Excluded Countries",
+   "options": "Outreach Excluded Country"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "issingle": 1,
+ "links": [],
+ "modified": "2026-10-28 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Vertex Outreach",
+ "name": "Outreach Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "Outreach Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "print": 1,
+   "read": 1,
+   "role": "Outreach User"
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

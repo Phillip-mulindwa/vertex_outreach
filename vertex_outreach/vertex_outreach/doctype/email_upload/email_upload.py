@@ -7,16 +7,26 @@ import io
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import now
 
 from vertex_outreach.contacts import (
-	claimed_by,
-	existing_contacts,
-	insert_contacts,
-	mark_contacts_signed,
+	ALREADY_CONTACTED,
+	CLAIMED,
+	CONFLICT,
+	CONTACTED,
+	DO_NOT_CONTACT,
+	EXCLUDED_COUNTRY,
+	FRESH,
+	SIGNED_PARTNER,
+	claim_fresh,
+	classify_rows,
+	country_name,
+	country_region,
+	insert_leads,
+	mark_contacted,
+	mark_leads_signed,
 	upsert_signed_partner_records,
 )
-from vertex_outreach.emails import email_domain, extract_text, find_emails, find_partner_emails
+from vertex_outreach.identifiers import LeadInput, parse_file
 
 JOB_TIMEOUT = 60 * 60
 
@@ -47,34 +57,33 @@ def process_upload(upload_name: str):
 		doc.db_set("status", "Processing", notify=True, commit=True)
 
 		filename, content = _read_attachment(doc)
-		if doc.upload_type == "Signed Partners":
-			partners, invalid_count = find_partner_emails(filename, content)
-			emails = list(partners)
-		else:
-			partners = None
-			emails, invalid_count = find_emails(extract_text(filename, content))
-		if not emails:
+		items = parse_file(
+			filename,
+			content,
+			default_country=country_region(doc.default_country),
+			resolve_country=country_region,
+		)
+		leads = [item for item in items if not item.error]
+		if not leads:
 			frappe.throw(
 				_(
-					"No valid email addresses were found in {0}. If this is a scanned PDF it has no "
-					"readable text - export the original document or run OCR on it first."
+					"No valid email addresses or WhatsApp numbers were found in {0}. If this is a scanned "
+					"PDF it has no readable text - export the original document or run OCR on it first."
 				).format(filename)
 			)
 
-		if partners is not None:
-			counts = _process_signed_partners(doc, partners)
-		else:
-			handler = {
-				"Already Contacted": _process_already_contacted,
-				"Scraped Leads": _process_scraped_leads,
-			}[doc.upload_type]
-			counts = handler(doc, emails)
+		handler = {
+			"Already Contacted": _process_already_contacted,
+			"Scraped Leads": _process_scraped_leads,
+			"Signed Partners": _process_signed_partners,
+		}[doc.upload_type]
+		counts = handler(doc, leads)
 
 		doc.db_set(
 			{
 				"status": "Done",
-				"total_found": len(emails) + invalid_count,
-				"invalid_count": invalid_count,
+				"total_found": len(items),
+				"invalid_count": len(items) - len(leads),
 				"error_log": None,
 				**counts,
 			},
@@ -103,74 +112,141 @@ def _read_attachment(doc) -> tuple[str, bytes | str]:
 	return file_doc.file_name or doc.file, file_doc.get_content()
 
 
-def _process_signed_partners(doc, partners: dict[str, str | None]) -> dict:
-	"""partners: {email: organization or None}. Upgrades/creates contacts and Signed Partner records."""
-	new, upgraded = mark_contacts_signed(partners, user=doc.owner, source=doc.source, email_upload=doc.name)
+def _process_signed_partners(doc, items: list[LeadInput]) -> dict:
+	"""Upgrades/creates leads, and a Signed Partner record per email."""
+	inserted, upgraded, conflicts = mark_leads_signed(
+		items, user=doc.owner, source=doc.source, email_upload=doc.name
+	)
+	partners: dict[str, str | None] = {}
+	conflict_ids = {id(item) for item in conflicts}
+	for item in items:
+		if item.email and id(item) not in conflict_ids and not partners.get(item.email):
+			partners[item.email] = item.organization
 	created, _updated = upsert_signed_partner_records(partners, user=doc.owner)
 	return {
-		"new_count": len(new),
+		"new_count": len(inserted),
 		"duplicate_count": len(upgraded),
 		"partner_count": len(created),
+		"conflict_count": len(conflicts),
+		"excluded_count": 0,
 		"clean_file": None,
+		"conflict_file": _attach_conflicts(doc, conflicts, classify_rows(conflicts)),
 	}
 
 
-def _process_already_contacted(doc, emails: list[str]) -> dict:
-	existing = existing_contacts(emails)
-	new = [e for e in emails if e not in existing]
-	insert_contacts(new, "Contacted", user=doc.owner, source=doc.source, email_upload=doc.name)
+def _process_already_contacted(doc, items: list[LeadInput]) -> dict:
+	"""Record every lead not yet in the system as Contacted; Claimed matches become Contacted too."""
+	infos = classify_rows(items)
+	new = [
+		item for item, info in zip(items, infos, strict=True) if info["verdict"] in (FRESH, EXCLUDED_COUNTRY)
+	]
+	inserted = [
+		n for n in insert_leads(new, CONTACTED, user=doc.owner, source=doc.source, email_upload=doc.name) if n
+	]
+	mark_contacted([info["lead"] for info in infos if info.get("lead") and info["status"] == CLAIMED])
+
+	conflicts = [(item, info) for item, info in zip(items, infos, strict=True) if info["verdict"] == CONFLICT]
 	return {
-		"new_count": len(new),
-		"duplicate_count": len(existing),
-		"partner_count": 0,
+		"new_count": len(inserted),
+		"duplicate_count": len(items) - len(inserted) - len(conflicts),
+		"partner_count": sum(info["verdict"] == SIGNED_PARTNER for info in infos),
+		"conflict_count": len(conflicts),
+		"excluded_count": sum(info["verdict"] == EXCLUDED_COUNTRY for info in infos),
 		"clean_file": None,
+		"conflict_file": _attach_conflicts(doc, *zip(*conflicts, strict=True)) if conflicts else None,
 	}
 
 
-def _process_scraped_leads(doc, emails: list[str]) -> dict:
-	existing = existing_contacts(emails)
+def _process_scraped_leads(doc, items: list[LeadInput]) -> dict:
+	"""Claim the fresh leads and hand them out as a clean file."""
+	infos = classify_rows(items)
+	# Another upload or check running at the same time may claim some of these between our check
+	# and insert; claim_fresh reclassifies those, so only leads this upload owns are handed out.
+	claim_fresh(items, infos, user=doc.owner, source=doc.source, email_upload=doc.name)
 
-	fresh, partner_count, duplicate_count = [], 0, 0
-	for e in emails:
-		if existing.get(e) == "Signed Partner":
-			partner_count += 1
-		elif e in existing:
-			duplicate_count += 1
-		else:
-			fresh.append(e)
+	claimed = [(item, info) for item, info in zip(items, infos, strict=True) if info.get("claimed")]
+	conflicts = [(item, info) for item, info in zip(items, infos, strict=True) if info["verdict"] == CONFLICT]
+	verdicts = [info["verdict"] for info in infos]
+	return {
+		"new_count": len(claimed),
+		"duplicate_count": verdicts.count(ALREADY_CONTACTED) + verdicts.count(DO_NOT_CONTACT),
+		"partner_count": verdicts.count(SIGNED_PARTNER),
+		"conflict_count": len(conflicts),
+		"excluded_count": verdicts.count(EXCLUDED_COUNTRY),
+		"clean_file": _attach_clean_csv(doc, claimed) if claimed else None,
+		"conflict_file": _attach_conflicts(doc, *zip(*conflicts, strict=True)) if conflicts else None,
+	}
 
-	insert_contacts(
-		fresh, "Contacted", user=doc.owner, source=doc.source, email_upload=doc.name, last_contacted_on=now()
+
+def _attach_clean_csv(doc, claimed: list[tuple[LeadInput, dict]]) -> str:
+	return _attach_csv(
+		doc,
+		"clean_file",
+		f"{doc.name}-new-leads.csv",
+		["organization", "email", "whatsapp", "country", "lead", "note"],
+		(
+			(
+				item.organization,
+				item.email,
+				item.whatsapp,
+				country_name(item.region or item.country),
+				info["lead"],
+				info.get("note"),
+			)
+			for item, info in claimed
+		),
 	)
 
-	# Another upload running at the same time may have claimed some of these between our
-	# check and insert (INSERT IGNORE skips them) - only hand out the ones this upload owns.
-	claimed = claimed_by(fresh, email_upload=doc.name)
-	lost = len(fresh) - len(claimed)
-	fresh = [e for e in fresh if e in claimed]
 
-	clean_file = _attach_clean_csv(doc, fresh) if fresh else None
-	return {
-		"new_count": len(fresh),
-		"duplicate_count": duplicate_count + lost,
-		"partner_count": partner_count,
-		"clean_file": clean_file,
-	}
+def _attach_conflicts(doc, items, infos) -> str | None:
+	"""A CSV of rows whose email and WhatsApp number belong to different leads, for a manager."""
+	if not items:
+		return None
+	rows = []
+	for item, info in zip(items, infos, strict=True):
+		by_email, by_whatsapp = info.get("conflict") or ({}, {})
+		rows.append(
+			(
+				item.input,
+				item.organization,
+				item.email,
+				item.whatsapp,
+				by_email.get("lead"),
+				by_email.get("organization"),
+				by_email.get("contacted_by_name"),
+				by_whatsapp.get("lead"),
+				by_whatsapp.get("organization"),
+				by_whatsapp.get("contacted_by_name"),
+			)
+		)
+	header = [
+		"input",
+		"organization",
+		"email",
+		"whatsapp",
+		"email_lead",
+		"email_lead_organization",
+		"email_lead_owner",
+		"whatsapp_lead",
+		"whatsapp_lead_organization",
+		"whatsapp_lead_owner",
+	]
+	return _attach_csv(doc, "conflict_file", f"{doc.name}-conflicts.csv", header, rows)
 
 
-def _attach_clean_csv(doc, emails: list[str]) -> str:
+def _attach_csv(doc, fieldname: str, file_name: str, header: list[str], rows) -> str:
 	buf = io.StringIO()
 	writer = csv.writer(buf)
-	writer.writerow(["email", "domain"])
-	writer.writerows((e, email_domain(e)) for e in emails)
+	writer.writerow(header)
+	writer.writerows(rows)
 
 	file_doc = frappe.get_doc(
 		{
 			"doctype": "File",
-			"file_name": f"{doc.name}-new-emails.csv",
+			"file_name": file_name,
 			"attached_to_doctype": doc.doctype,
 			"attached_to_name": doc.name,
-			"attached_to_field": "clean_file",
+			"attached_to_field": fieldname,
 			"is_private": 1,
 			"content": buf.getvalue(),
 		}

@@ -3,6 +3,9 @@
 
 frappe.ui.form.on("Email Upload", {
 	refresh(frm) {
+		frm.add_custom_button(__("Download template"), () =>
+			window.open("/api/method/vertex_outreach.api.download_template")
+		);
 		if (["Queued", "Processing"].includes(frm.doc.status)) {
 			frm.set_intro(__("Processing in the background. This form refreshes when it finishes."), "blue");
 		} else if (frm.doc.status === "Failed") {

@@ -5,63 +5,88 @@ import frappe
 from frappe import _
 from frappe.utils import cint, now
 
-from vertex_outreach.contacts import (
-	CONTACT,
-	FRESH,
-	INVALID,
-	claimed_by,
-	classify_emails,
-	insert_contacts,
-)
-from vertex_outreach.emails import scan_emails
+from vertex_outreach import contacts
+from vertex_outreach.contacts import CONTACT, claim_fresh, classify_rows, country_region
+from vertex_outreach.identifiers import parse_text
 
-ROLES = ("Outreach User", "System Manager")
+ROLES = ("Outreach User", "Outreach Manager", "System Manager")
 MANUAL_SOURCE = "Manual check"
-MAX_EMAILS_PER_CHECK = 5000
+MAX_ITEMS_PER_CHECK = 5000
+DEFAULT_COUNTRY_KEY = "outreach_default_country"
+TEMPLATE_COLUMNS = ["Company", "Email", "WhatsApp", "Country"]
 
 
 @frappe.whitelist(methods=["POST"])
-def check_emails(emails: str, claim: int = 0):
-	"""Check pasted text for emails already in the system; optionally claim the fresh ones.
+def check_leads(text: str, claim: int = 0, default_country: str | None = None):
+	"""Check pasted emails and WhatsApp numbers against existing leads; optionally claim the fresh ones.
 
-	Returns {"results": [{original, email, verdict, ...details}], "summary": {verdict: count},
-	"claimed": [emails inserted by this call]}.
+	`default_country` (a Country) is used for numbers without a country code, and remembered as
+	the user's choice. Returns {"results": [{input, type, verdict, matched_on, ...details}],
+	"summary": {verdict: count}, "claimed": [names of leads created by this call]}.
 	"""
 	claim = cint(claim)
 	frappe.only_for(ROLES)
 	frappe.has_permission(CONTACT, "create" if claim else "read", throw=True)
 
-	found = scan_emails(emails or "")
-	if len(found) > MAX_EMAILS_PER_CHECK:
+	region = country_region(default_country)
+	if default_country and not region:
+		frappe.throw(_("Unknown country {0}").format(default_country))
+	if (default_country or "") != (frappe.defaults.get_user_default(DEFAULT_COUNTRY_KEY) or ""):
+		frappe.defaults.set_user_default(DEFAULT_COUNTRY_KEY, default_country or "")
+
+	items = parse_text(text or "", region)
+	if len(items) > MAX_ITEMS_PER_CHECK:
 		frappe.throw(
-			_("Too many emails ({0}). Check at most {1} at a time, or use an Email Upload.").format(
-				len(found), MAX_EMAILS_PER_CHECK
+			_("Too many leads ({0}). Check at most {1} at a time, or use an Email Upload.").format(
+				len(items), MAX_ITEMS_PER_CHECK
 			)
 		)
 
-	valid = list(dict.fromkeys(e for _original, e in found if e))
-	info = classify_emails(valid)
-
-	claimed = []
-	if claim:
-		fresh = [e for e in valid if info[e]["verdict"] == FRESH]
-		user = frappe.session.user
-		ts = now()
-		insert_contacts(fresh, "Contacted", user=user, source=MANUAL_SOURCE, last_contacted_on=ts, timestamp=ts)
-		# INSERT IGNORE skips anything someone else claimed in the meantime; only ours match this stamp
-		won = claimed_by(fresh, owner=user, creation=ts)
-		claimed = [e for e in fresh if e in won]
-		if lost := [e for e in fresh if e not in won]:
-			info.update(classify_emails(lost))
-		for e in claimed:
-			info[e]["claimed"] = 1
+	infos = classify_rows(items)
+	claimed = claim_fresh(items, infos, user=frappe.session.user, source=MANUAL_SOURCE) if claim else []
 
 	results = [
-		{"original": original, "email": email, **(info[email] if email else {"verdict": INVALID})}
-		for original, email in found
+		{
+			"input": item.input,
+			"type": item.type,
+			"email": item.email,
+			"whatsapp": item.whatsapp,
+			**info,
+			"organization": info.get("organization") or item.organization,
+		}
+		for item, info in zip(items, infos, strict=True)
 	]
 	summary = {}
 	for row in results:
 		summary[row["verdict"]] = summary.get(row["verdict"], 0) + 1
 
 	return {"results": results, "summary": summary, "claimed": claimed}
+
+
+@frappe.whitelist(methods=["POST"])
+def check_emails(emails: str, claim: int = 0):
+	"""Old name of check_leads, kept for existing API users."""
+	return check_leads(emails, claim)
+
+
+@frappe.whitelist(methods=["POST"])
+def mark_contacted(names):
+	"""Set Claimed leads to Contacted and stamp last_contacted_on on every given lead."""
+	names = frappe.parse_json(names)
+	if isinstance(names, str):
+		names = [names]
+	frappe.only_for(ROLES)
+	frappe.has_permission(CONTACT, "write", throw=True)
+	contacts.mark_contacted(names, last_contacted_on=now())
+	return len(names)
+
+
+@frappe.whitelist()
+def download_template():
+	"""An empty XLSX with the columns Email Upload reads."""
+	from frappe.utils.xlsxutils import make_xlsx
+
+	frappe.only_for(ROLES)
+	frappe.response["filename"] = "outreach-leads-template.xlsx"
+	frappe.response["filecontent"] = make_xlsx([TEMPLATE_COLUMNS], "Leads").getvalue()
+	frappe.response["type"] = "binary"

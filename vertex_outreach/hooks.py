@@ -26,7 +26,7 @@ app_license = "mit"
 
 # include js, css files in header of desk.html
 # app_include_css = "/assets/vertex_outreach/css/vertex_outreach.css"
-app_include_js = "/assets/vertex_outreach/js/check_emails.js"
+app_include_js = "/assets/vertex_outreach/js/check_leads.js"
 
 # include js, css files in header of web template
 # web_include_css = "/assets/vertex_outreach/css/vertex_outreach.css"
@@ -84,7 +84,7 @@ app_include_js = "/assets/vertex_outreach/js/check_emails.js"
 
 before_install = "vertex_outreach.install.ensure_role"
 before_migrate = "vertex_outreach.install.ensure_role"
-# after_install = "vertex_outreach.install.after_install"
+after_install = "vertex_outreach.install.after_install"
 
 # Uninstallation
 # ------------
@@ -148,6 +148,10 @@ before_migrate = "vertex_outreach.install.ensure_role"
 
 # Scheduled Tasks
 # ---------------
+
+scheduler_events = {
+	"daily": ["vertex_outreach.contacts.release_stale_claims"],
+}
 
 # scheduler_events = {
 # 	"all": [
@@ -242,4 +246,3 @@ before_migrate = "vertex_outreach.install.ensure_role"
 # default_log_clearing_doctypes = {
 # 	"Logging DocType Name": 30  # days to retain logs
 # }
-

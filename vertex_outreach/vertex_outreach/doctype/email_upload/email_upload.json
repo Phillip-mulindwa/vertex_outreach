@@ -8,6 +8,7 @@
   "upload_type",
   "source",
   "file",
+  "default_country",
   "column_break_1",
   "status",
   "results_section",
@@ -17,7 +18,10 @@
   "column_break_2",
   "partner_count",
   "invalid_count",
+  "conflict_count",
+  "excluded_count",
   "clean_file",
+  "conflict_file",
   "section_break_err",
   "error_log"
  ],
@@ -42,6 +46,13 @@
    "fieldtype": "Attach",
    "label": "File",
    "reqd": 1
+  },
+  {
+   "description": "For WhatsApp numbers without a country code, when the row has no Country column.",
+   "fieldname": "default_country",
+   "fieldtype": "Link",
+   "label": "Default Country",
+   "options": "Country"
   },
   {
    "fieldname": "column_break_1",
@@ -105,10 +116,33 @@
    "read_only": 1
   },
   {
+   "description": "Email matches one lead and WhatsApp another. See the Conflicts file.",
+   "fieldname": "conflict_count",
+   "fieldtype": "Int",
+   "label": "Conflicts",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "fieldname": "excluded_count",
+   "fieldtype": "Int",
+   "label": "Excluded Country",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
    "depends_on": "eval:doc.clean_file",
    "fieldname": "clean_file",
    "fieldtype": "Attach",
-   "label": "Clean File (new emails)",
+   "label": "Clean File (new leads)",
+   "no_copy": 1,
+   "read_only": 1
+  },
+  {
+   "depends_on": "eval:doc.conflict_file",
+   "fieldname": "conflict_file",
+   "fieldtype": "Attach",
+   "label": "Conflicts (for manager review)",
    "no_copy": 1,
    "read_only": 1
   },
@@ -127,7 +161,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-27 12:00:00.000000",
+ "modified": "2026-10-28 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "Vertex Outreach",
  "name": "Email Upload",
@@ -155,6 +189,18 @@
    "read": 1,
    "report": 1,
    "role": "Outreach User",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Outreach Manager",
    "share": 1,
    "write": 1
   }
