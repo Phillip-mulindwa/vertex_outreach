@@ -12,6 +12,7 @@ from vertex_outreach.contacts import (
 	SIGNED,
 	country_name,
 	country_region,
+	drop_inherited_countries,
 	find_leads,
 	lead_conflict_message,
 	upsert_partner_lead,
@@ -20,6 +21,9 @@ from vertex_outreach.identifiers import LeadInput, normalize_email, normalize_ph
 
 
 class SignedPartner(Document):
+	def before_insert(self):
+		drop_inherited_countries(self)
+
 	def validate(self):
 		self._normalize_identifiers()
 		self.signed_on = self.signed_on or today()

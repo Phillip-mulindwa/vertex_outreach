@@ -444,6 +444,70 @@ class TestCheckOne(LeadTestCase):
 		self.assertIn("Add the country code", validate_whatsapp("0772 123456")["error"])
 
 
+class TestInheritedCountry(LeadTestCase):
+	"""frappe.new_doc (Data Import) fills a lead's country with the system country."""
+
+	ZA = "+27821234567"
+
+	def setUp(self):
+		super().setUp()
+		self.system_country = frappe.db.get_default("country")
+		if not self.system_country:
+			self.skipTest("no system country set")
+
+	def new_lead(self, **values):
+		doc = frappe.new_doc(CONTACT)
+		doc.update({"status": CONTACTED, **values})
+		return doc.insert(ignore_permissions=True)
+
+	def test_new_doc_lead_does_not_keep_the_system_country(self):
+		self.assertEqual(frappe.new_doc(CONTACT).country, self.system_country)
+		self.assertIsNone(self.new_lead(email="inherit@country-vo.example").country)
+		self.assertEqual(self.new_lead(whatsapp=KE).country, "Kenya")
+		self.assertEqual(self.new_lead(email="kenya@country-vo.example", country="Kenya").country, "Kenya")
+
+	def test_whatsapp_number_backs_the_country(self):
+		lead = self.new_lead(whatsapp=self.ZA, country="South Africa")
+		self.assertEqual((lead.country, lead.whatsapp_country), ("South Africa", "South Africa"))
+
+	def test_partner_and_upload_country_fields(self):
+		inherited = frappe._dict(
+			country=self.system_country,
+			whatsapp_country=self.system_country,
+			default_country=self.system_country,
+		)
+		with patch.object(contacts, "get_new_doc", return_value=inherited):
+			partner = frappe.new_doc("Signed Partner")
+			partner.update(
+				{
+					"organization": "Country Co",
+					"email": "partner@country-vo.example",
+					"whatsapp_country": self.system_country,
+				}
+			)
+			partner.insert(ignore_permissions=True)
+			self.assertIsNone(partner.whatsapp_country)
+
+			upload = frappe.new_doc("Email Upload")
+			upload.default_country = self.system_country
+			contacts.drop_inherited_countries(upload)
+			self.assertIsNone(upload.default_country)
+
+	def test_patch_clears_only_unbacked_default_country(self):
+		from vertex_outreach.patches.v1_2 import clear_default_lead_country
+
+		plain = self.make_lead(email="plain@country-vo.example")
+		backed = self.make_lead(whatsapp=self.ZA)
+		other = self.make_lead(whatsapp=KE)
+		for lead in (plain, backed, other):
+			lead.db_set("country", self.system_country)
+
+		clear_default_lead_country.execute()
+		self.assertIsNone(frappe.db.get_value(CONTACT, plain.name, "country"))
+		self.assertEqual(frappe.db.get_value(CONTACT, backed.name, "country"), self.system_country)
+		self.assertIsNone(frappe.db.get_value(CONTACT, other.name, "country"))
+
+
 class TestMigratedData(FrappeTestCase):
 	"""The 998 emails imported before leads had LEAD- names still match after the migration."""
 

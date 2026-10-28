@@ -11,10 +11,11 @@ all agree on what "already in the system" means.
 
 import frappe
 from frappe import _
+from frappe.model.create_new import get_new_doc
 from frappe.utils import add_days, getdate, now, now_datetime
 from frappe.utils.caching import request_cache
 
-from vertex_outreach.identifiers import EMAIL, WHATSAPP, LeadInput, email_domain
+from vertex_outreach.identifiers import EMAIL, WHATSAPP, LeadInput, email_domain, normalize_phone
 
 CONTACT = "Outreach Contact"
 SETTINGS = "Outreach Settings"
@@ -100,6 +101,31 @@ def _regions_by_name() -> dict[str, str]:
 
 def country_name(region: str | None) -> str | None:
 	return countries().get(region.upper()) if region else None
+
+
+COUNTRY_FIELDS = ("country", "whatsapp_country", "default_country")
+
+
+def drop_inherited_countries(doc):
+	"""New records never keep a country Frappe filled in from the system or user default.
+
+	frappe.new_doc (which Data Import uses) fills any field named "country" with the system
+	country, an excluded one on this site. A country field still holding the value Frappe would
+	fill in is cleared, unless the record's WhatsApp number is from that country.
+	"""
+	inherited = get_new_doc(doc.doctype)
+	fields = [f for f in COUNTRY_FIELDS if doc.get(f) and doc.get(f) == inherited.get(f)]
+	if not fields:
+		return
+	for field in fields:
+		doc.set(field, None)
+	if doc.get("whatsapp"):
+		backed = country_name(
+			normalize_phone(doc.whatsapp, country_region(doc.get("whatsapp_country"))).region
+		)
+		for field in fields:
+			if backed == inherited.get(field):
+				doc.set(field, backed)
 
 
 def country_region(value: str | None) -> str | None:

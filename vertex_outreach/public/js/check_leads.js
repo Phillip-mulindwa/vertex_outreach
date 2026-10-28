@@ -193,13 +193,16 @@ vertex_outreach.make_single_check = function ($parent) {
 	const fields = new frappe.ui.FieldGroup({
 		body: $parent,
 		fields: [
-			{ fieldname: "company", fieldtype: "Data", label: __("Company name") },
+			{ fieldname: "company", fieldtype: "Data", label: __("Company name"), onchange: () => clear_result() },
 			{
 				fieldname: "email",
 				fieldtype: "Data",
 				label: __("Email"),
 				placeholder: "name@company.com",
-				onchange: () => check_email(),
+				onchange: () => {
+					clear_result();
+					check_email();
+				},
 			},
 			{ fieldtype: "Column Break" },
 			{
@@ -208,7 +211,10 @@ vertex_outreach.make_single_check = function ($parent) {
 				options: "Country",
 				label: __("WhatsApp country"),
 				default: frappe.defaults.get_user_default(vertex_outreach.DEFAULT_COUNTRY_KEY) || "",
-				onchange: () => check_whatsapp(),
+				onchange: () => {
+					clear_result();
+					check_whatsapp();
+				},
 			},
 			{
 				fieldname: "whatsapp",
@@ -216,7 +222,10 @@ vertex_outreach.make_single_check = function ($parent) {
 				label: __("WhatsApp number"),
 				placeholder: __("e.g. 772 123 456"),
 				description: vertex_outreach.WHATSAPP_HINT,
-				onchange: () => check_whatsapp(),
+				onchange: () => {
+					clear_result();
+					check_whatsapp();
+				},
 			},
 			{ fieldtype: "Section Break" },
 			{ fieldname: "result", fieldtype: "HTML" },
@@ -232,6 +241,12 @@ vertex_outreach.make_single_check = function ($parent) {
 			text ? `<span style="color: var(--${colour}-600)">${esc(text)}</span>` : ""
 		);
 	const value = (fieldname) => (fields.get_value(fieldname) || "").trim();
+	// A result is only ever shown for the input it was checked against
+	let showing_result = false;
+	const clear_result = () => {
+		if (showing_result) fields.fields_dict.result.$wrapper.empty();
+		showing_result = false;
+	};
 
 	function check_email() {
 		const email = value("email");
@@ -292,10 +307,14 @@ vertex_outreach.make_single_check = function ($parent) {
 				.then((r) => {
 					frappe.boot.user.defaults[vertex_outreach.DEFAULT_COUNTRY_KEY] =
 						fields.get_value("whatsapp_country") || "";
-					vertex_outreach.render_single_result(r.message, fields.fields_dict.result.$wrapper);
-					if (r.message.claimed) {
-						fields.set_values({ company: "", email: "", whatsapp: "" });
-					}
+					// Cleared first, so clearing the inputs doesn't also clear the claim's result
+					const cleared = r.message.claimed
+						? fields.set_values({ company: "", email: "", whatsapp: "" })
+						: Promise.resolve();
+					return cleared.then(() => {
+						vertex_outreach.render_single_result(r.message, fields.fields_dict.result.$wrapper);
+						showing_result = true;
+					});
 				});
 		});
 	}

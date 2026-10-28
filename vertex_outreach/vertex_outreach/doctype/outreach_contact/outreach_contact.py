@@ -14,6 +14,7 @@ from vertex_outreach.contacts import (
 	country_name,
 	country_region,
 	describe_lead,
+	drop_inherited_countries,
 	excluded_regions,
 	find_leads,
 	full_names,
@@ -33,6 +34,7 @@ STATUS_DATES = {
 class OutreachContact(Document):
 	def before_insert(self):
 		self.uploaded_by = self.uploaded_by or frappe.session.user
+		drop_inherited_countries(self)
 
 	def validate(self):
 		# The same normalization uploads and Check Leads use, so the unique indexes see one form

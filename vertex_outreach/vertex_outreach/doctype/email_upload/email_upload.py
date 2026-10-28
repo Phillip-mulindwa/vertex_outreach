@@ -21,6 +21,7 @@ from vertex_outreach.contacts import (
 	classify_rows,
 	country_name,
 	country_region,
+	drop_inherited_countries,
 	insert_leads,
 	mark_contacted,
 	mark_leads_signed,
@@ -43,6 +44,9 @@ OLD_UPLOAD_TYPES = {
 
 
 class EmailUpload(Document):
+	def before_insert(self):
+		drop_inherited_countries(self)
+
 	def before_save(self):
 		if self.status == "Pending" and self.file:
 			self.status = "Queued"
