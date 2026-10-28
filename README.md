@@ -34,7 +34,7 @@ and never contacted after 14 days so others can claim them.
 **Outreach Settings** holds the release period (0 turns it off) and the excluded countries
 (Uganda and South Africa by default). A number from an excluded country, an email on its ccTLD
 (`.ug`, `.za`) or a row whose Country column names it is EXCLUDED COUNTRY: it cannot be claimed
-and is left out of Scraped Leads clean files.
+and is left out of the clean file of a "New leads to check" upload.
 
 Phone numbers may use spaces, dashes, brackets, a leading `+` or `00`, or be `wa.me` /
 `api.whatsapp.com` links. Numbers without a country code need a default country; without one
@@ -42,35 +42,49 @@ they are INVALID ("needs country code").
 
 ### Checking leads
 
-- **Check Leads** (Outreach workspace, or the button on the Outreach Lead list): paste emails and
-  numbers mixed in any format, choose a default country (remembered per user), then **Check**, or
-  **Check & Claim Fresh** to claim the fresh ones. A line with a company, an email and a number
-  becomes one lead. **Copy fresh** copies the fresh inputs.
-- API: `POST /api/method/vertex_outreach.api.check_leads` with `text`, `claim` (0/1) and optional
+**Check Leads** (Outreach workspace, or the button on the Outreach Lead list) has two tabs:
+
+- **Check one lead** (the default): Company name, Email, WhatsApp country (remembered per user)
+  and WhatsApp number as separate fields, checked as you type. **Check** shows one result card,
+  e.g. "ALREADY CONTACTED: matched on WhatsApp +256772123456, by Grace Achieng on 12 Oct 2026,
+  company Acme Travel". **Check & Claim** claims a fresh lead as ONE lead with all three, then
+  clears the fields.
+- **Check many**: paste emails and numbers mixed in any format, choose a default country, then
+  **Check**, or **Check & Claim Fresh**. A line with a company, an email and a number becomes one
+  lead. **Copy fresh** copies the fresh inputs.
+
+API (Outreach User, Outreach Manager and System Manager):
+
+- `POST /api/method/vertex_outreach.api.check_one` with `company`, `email`, `whatsapp`,
+  `whatsapp_country` and `claim` (0/1).
+- `POST /api/method/vertex_outreach.api.check_leads` with `text`, `claim` (0/1) and optional
   `default_country`. `vertex_outreach.api.check_emails` (`emails`, `claim`) still works.
-  Available to Outreach User, Outreach Manager and System Manager.
 
-### Email Upload
+### Upload a list
 
-**Download template** gives an XLSX with the columns Company, Email, WhatsApp, Country. In
-CSV/XLSX files with a header row naming an email or WhatsApp column (common variants such as
-`E-mail`, `Phone`, `Mobile`, `Organisation`, `Company Name` are accepted), each row is read as one
-lead. Other files and sheets are read line by line like Check Leads. **Default Country** applies
-to numbers without a country code when the row has no Country.
+**Upload a list** (DocType `Email Upload`). **Download template** gives an XLSX with the columns
+Company, Email, WhatsApp, Country. In CSV/XLSX files with a header row naming an email or WhatsApp
+column (common variants such as `E-mail`, `Phone`, `Mobile`, `Organisation`, `Company Name` are
+accepted), each row is read as one lead. Other files and sheets are read line by line like Check
+Leads. **Default Country** applies to numbers without a country code when the row has no Country.
 
-- **Scraped Leads** claims the fresh leads and attaches a clean CSV of them.
-- **Already Contacted** records leads not yet in the system as Contacted, and moves matching
+- **New leads to check** claims the fresh leads and attaches a clean CSV of them.
+- **Past contacts (history)** records leads not yet in the system as Contacted, and moves matching
   Claimed leads to Contacted.
-- **Signed Partners** marks the matching leads Signed Partner (creating them when missing) and
-  creates a Signed Partner record per email.
+- **Signed partners** marks the matching leads Signed Partner (creating them when missing) and
+  creates or updates a Signed Partner record per row, including WhatsApp-only rows.
 
 Conflicts are counted and attached as a CSV for a manager to review.
 
 ### Signed partners
 
-Partners are tracked per email, in the **Signed Partner** list (System Manager and Outreach
-Manager can edit it; Outreach User can read it). Saving a partner marks the lead with that email
-as Signed Partner (creating it if needed); deleting one sets the lead back to Contacted.
+Partners are kept in the **Signed Partner** list (`SP-#####`; System Manager and Outreach Manager
+can edit it, Outreach User can read it), each with an email, a WhatsApp number or both, each
+unique. Saving a partner upserts the Outreach Lead matched by email or WhatsApp: it becomes Signed
+Partner and gets the organization and any identifier it lacks (an identifier it already holds a
+different value for goes on a new Signed Partner lead, so every partner identifier is blocked).
+If the email and the number are on two different leads, the save is blocked as a conflict.
+Deleting a partner sets its leads back to Contacted.
 
 ### Weekly summary
 
@@ -82,14 +96,15 @@ recipients and enable it.
 ### Bulk import a folder
 
 Every .csv / .xlsx / .xlsm / .pdf / .txt file under the folder (recursively) becomes its own
-Email Upload, processed one at a time with a progress line per file:
+upload, processed one at a time with a progress line per file:
 
 ```bash
 bench --site <site> execute vertex_outreach.bulk.import_folder \
-  --kwargs "{'path': '/path/to/folder', 'upload_type': 'Already Contacted', 'default_country': 'Kenya'}"
+  --kwargs "{'path': '/path/to/folder', 'upload_type': 'Past contacts (history)', 'default_country': 'Kenya'}"
 ```
 
-`upload_type` is `Already Contacted` (default), `Scraped Leads` or `Signed Partners`;
+`upload_type` is `Past contacts (history)` (default), `New leads to check` or `Signed partners`
+(the old names still work);
 `source` defaults to each file's name.
 
 ### Demo data

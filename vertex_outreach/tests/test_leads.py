@@ -9,21 +9,32 @@ from frappe.tests.utils import FrappeTestCase
 from frappe.utils import now_datetime
 
 from vertex_outreach import contacts
-from vertex_outreach.api import check_leads
+from vertex_outreach.api import check_leads, check_one, validate_whatsapp
 from vertex_outreach.contacts import (
 	ALREADY_CONTACTED,
 	CLAIMED,
 	CONFLICT,
 	CONTACT,
 	CONTACTED,
+	DO_NOT_CONTACT,
 	EXCLUDED_COUNTRY,
 	FRESH,
+	SIGNED,
+	SIGNED_PARTNER,
 	claim_fresh,
 	classify_rows,
 	insert_leads,
 	release_stale_claims,
 )
 from vertex_outreach.identifiers import NEEDS_COUNTRY_CODE, LeadInput, normalize_phone, parse_file, parse_text
+from vertex_outreach.vertex_outreach.doctype.email_upload import email_upload
+from vertex_outreach.vertex_outreach.doctype.email_upload.email_upload import (
+	NEW_LEADS,
+	OLD_UPLOAD_TYPES,
+	PAST_CONTACTS,
+	SIGNED_PARTNERS,
+	UPLOAD_TYPES,
+)
 
 UG = "+256772123456"
 KE = "+254712123456"
@@ -218,8 +229,6 @@ class TestUploads(LeadTestCase):
 		self.make_lead(email="two@vo-test.example", whatsapp=GB)
 
 	def process(self, upload_type):
-		from vertex_outreach.vertex_outreach.doctype.email_upload import email_upload
-
 		doc = frappe.get_doc(
 			{
 				"doctype": "Email Upload",
@@ -233,15 +242,10 @@ class TestUploads(LeadTestCase):
 			for i in parse_file("leads.csv", self.CSV, resolve_country=contacts.country_region)
 			if not i.error
 		]
-		handler = {
-			"Scraped Leads": email_upload._process_scraped_leads,
-			"Already Contacted": email_upload._process_already_contacted,
-			"Signed Partners": email_upload._process_signed_partners,
-		}[upload_type]
-		return doc, handler(doc, items)
+		return doc, email_upload.HANDLERS[upload_type](doc, items)
 
-	def test_scraped_leads_claims_only_fresh_and_leaves_excluded_out_of_clean_file(self):
-		_doc, counts = self.process("Scraped Leads")
+	def test_new_leads_claims_only_fresh_and_leaves_excluded_out_of_clean_file(self):
+		_doc, counts = self.process(NEW_LEADS)
 		self.assertEqual(
 			{k: counts[k] for k in ("new_count", "duplicate_count", "conflict_count", "excluded_count")},
 			{"new_count": 1, "duplicate_count": 1, "conflict_count": 1, "excluded_count": 2},
@@ -254,10 +258,10 @@ class TestUploads(LeadTestCase):
 		conflicts = frappe.get_doc("File", {"file_url": counts["conflict_file"]}).get_content()
 		self.assertIn("one@vo-test.example", conflicts)
 
-	def test_already_contacted_records_new_leads_as_contacted(self):
+	def test_past_contacts_records_new_leads_as_contacted(self):
 		[claimed] = check_leads("claimed@vo-test.example", claim=1)["claimed"]
 		self.CSV += "Claimed Co,claimed@vo-test.example,,\n"
-		_doc, counts = self.process("Already Contacted")
+		_doc, counts = self.process(PAST_CONTACTS)
 		self.assertEqual(counts["new_count"], 3)  # fresh, Kampala and Joburg: they were contacted already
 		self.assertEqual(
 			frappe.db.get_value(CONTACT, {"email": "fresh@vo-test.example"}, "status"), CONTACTED
@@ -265,10 +269,179 @@ class TestUploads(LeadTestCase):
 		self.assertEqual(frappe.db.get_value(CONTACT, claimed, "status"), CONTACTED)
 
 	def test_signed_partners_upgrades_the_lead_matched_by_whatsapp(self):
-		_doc, counts = self.process("Signed Partners")
+		_doc, counts = self.process(SIGNED_PARTNERS)
 		self.assertEqual(counts["conflict_count"], 1)
-		self.assertEqual(frappe.db.get_value(CONTACT, {"whatsapp": KE}, "status"), "Signed Partner")
+		self.assertEqual(frappe.db.get_value(CONTACT, {"whatsapp": KE}, "status"), SIGNED)
 		self.assertEqual(frappe.db.get_value(CONTACT, {"email": "one@vo-test.example"}, "status"), CONTACTED)
+		# The WhatsApp-only row (Kampala) gets a Signed Partner record too
+		record = frappe.db.get_value(
+			"Signed Partner",
+			{"whatsapp": UG},
+			["name", "email", "whatsapp_country", "organization"],
+			as_dict=True,
+		)
+		self.assertTrue(record.name.startswith("SP-"))
+		self.assertEqual(
+			(record.email, record.whatsapp_country, record.organization), (None, "Uganda", "Kampala Co")
+		)
+
+
+class TestUploadTypes(LeadTestCase):
+	def test_renamed_upload_types(self):
+		self.assertEqual(UPLOAD_TYPES, ("New leads to check", "Past contacts (history)", "Signed partners"))
+		options = frappe.get_meta("Email Upload").get_field("upload_type").options.split("\n")
+		self.assertEqual(tuple(options), UPLOAD_TYPES)
+		self.assertEqual(set(email_upload.HANDLERS), set(UPLOAD_TYPES))
+		self.assertEqual(frappe.get_meta("Email Upload").get_field("upload_type").default, NEW_LEADS)
+
+	def test_migration_renames_stored_upload_types(self):
+		from vertex_outreach.patches.v1_2 import rename_upload_types
+
+		names = []
+		for old in OLD_UPLOAD_TYPES:
+			doc = frappe.get_doc(
+				{
+					"doctype": "Email Upload",
+					"upload_type": NEW_LEADS,
+					"file": "/private/files/x.csv",
+					"status": "Done",
+				}
+			).insert(ignore_permissions=True)
+			frappe.db.set_value("Email Upload", doc.name, "upload_type", old)
+			names.append(doc.name)
+		rename_upload_types.execute()
+		self.assertEqual(
+			[frappe.db.get_value("Email Upload", n, "upload_type") for n in names],
+			list(OLD_UPLOAD_TYPES.values()),
+		)
+		# compared in Python: the column's collation thinks "Signed Partners" == "Signed partners"
+		stored = set(frappe.get_all("Email Upload", pluck="upload_type"))
+		self.assertFalse(stored & set(OLD_UPLOAD_TYPES))
+
+	def test_upload_label_is_translated(self):
+		frappe.local.lang = "en"
+		self.assertEqual(frappe._("Email Upload"), "Upload a list")
+		self.assertEqual(frappe._("Outreach Contact"), "Outreach Lead")
+
+
+class TestSignedPartner(LeadTestCase):
+	def make_partner(self, **values):
+		return frappe.get_doc({"doctype": "Signed Partner", "organization": "Partner Co", **values}).insert(
+			ignore_permissions=True
+		)
+
+	def test_whatsapp_only_signed_partner(self):
+		partner = self.make_partner(whatsapp_country="Kenya", whatsapp="0712 123 456")
+		self.assertTrue(partner.name.startswith("SP-"))
+		self.assertEqual((partner.whatsapp, partner.email, partner.whatsapp_country), (KE, None, "Kenya"))
+
+		lead = frappe.get_doc(CONTACT, {"whatsapp": KE})
+		self.assertEqual((lead.status, lead.organization, lead.email), (SIGNED, "Partner Co", None))
+		self.assertEqual(check_one(whatsapp=KE)["verdict"], SIGNED_PARTNER)
+
+		with self.assertRaises(frappe.DuplicateEntryError):
+			self.make_partner(whatsapp=KE)
+
+		partner.delete()
+		self.assertEqual(frappe.db.get_value(CONTACT, lead.name, "status"), CONTACTED)
+
+	def test_needs_email_or_whatsapp(self):
+		with self.assertRaises(frappe.ValidationError):
+			self.make_partner()
+
+	def test_fills_the_matched_lead(self):
+		lead = self.make_lead(whatsapp=KE, organization="Old Name")
+		self.make_partner(email="Boss@Partner-VO.example", whatsapp=KE, organization="Partner Co")
+		lead.reload()
+		self.assertEqual(
+			(lead.status, lead.email, lead.whatsapp, lead.organization),
+			(SIGNED, "boss@partner-vo.example", KE, "Partner Co"),
+		)
+
+	def test_identifier_already_different_on_the_lead_gets_its_own_lead(self):
+		lead = self.make_lead(email="old@partner-vo.example", whatsapp=KE)
+		self.make_partner(email="new@partner-vo.example", whatsapp=KE)
+		self.assertEqual(
+			frappe.db.get_value(CONTACT, lead.name, ["status", "email"]), (SIGNED, "old@partner-vo.example")
+		)
+		self.assertEqual(frappe.db.get_value(CONTACT, {"email": "new@partner-vo.example"}, "status"), SIGNED)
+
+	def test_conflict_blocks_the_save(self):
+		self.make_lead(email="one@partner-vo.example", organization="One")
+		self.make_lead(whatsapp=KE, organization="Two")
+		with self.assertRaises(frappe.ValidationError) as raised:
+			self.make_partner(email="one@partner-vo.example", whatsapp=KE)
+		self.assertIn("A manager needs to review this conflict", str(raised.exception))
+		self.assertFalse(frappe.db.exists("Signed Partner", {"email": "one@partner-vo.example"}))
+
+
+class TestCheckOne(LeadTestCase):
+	def test_fresh_then_claim_creates_one_lead(self):
+		self.make_lead(email="someone@vo-test.example", organization="Vo Single Co")
+		result = check_one(company="Vo Single Co", email="hello@vo-single.example", whatsapp="+254712123456")
+		self.assertEqual((result["verdict"], result["summary"]), (FRESH, "FRESH: no match"))
+		self.assertEqual(result["note"], "1 other lead named Vo Single Co")
+		self.assertIsNone(result["claimed"])
+
+		result = check_one(
+			company="Vo Single Co",
+			email="hello@vo-single.example",
+			whatsapp="0712 123456",
+			whatsapp_country="Kenya",
+			claim=1,
+		)
+		lead = frappe.get_doc(CONTACT, result["claimed"])
+		self.assertEqual(
+			(lead.organization, lead.email, lead.whatsapp, lead.whatsapp_country, lead.status),
+			("Vo Single Co", "hello@vo-single.example", KE, "Kenya", CLAIMED),
+		)
+		self.assertIn(lead.name, result["summary"])
+
+	def test_already_contacted(self):
+		self.make_lead(email="old@vo-test.example", whatsapp=KE, organization="Acme Travel")
+		result = check_one(email="other@vo-test.example", whatsapp="+254 712 123 456")
+		self.assertEqual(result["verdict"], ALREADY_CONTACTED)
+		self.assertRegex(
+			result["summary"],
+			r"^ALREADY CONTACTED: matched on WhatsApp \+254712123456, by Administrator on \d+ \w+ \d{4}, company Acme Travel$",
+		)
+		self.assertEqual(result["note"], "The lead has a different email: old@vo-test.example")
+
+	def test_signed_partner(self):
+		self.make_lead(email="partner@vo-test.example", status=SIGNED)
+		result = check_one(email="partner@vo-test.example")
+		self.assertEqual(result["verdict"], SIGNED_PARTNER)
+		self.assertTrue(
+			result["summary"].startswith("SIGNED PARTNER: matched on Email partner@vo-test.example")
+		)
+
+	def test_do_not_contact(self):
+		self.make_lead(email="gone@vo-test.example", status="Unsubscribed")
+		self.assertEqual(check_one(email="gone@vo-test.example")["verdict"], DO_NOT_CONTACT)
+
+	def test_conflict(self):
+		self.make_lead(email="one@vo-test.example")
+		self.make_lead(whatsapp=KE)
+		result = check_one(email="one@vo-test.example", whatsapp=KE, claim=1)
+		self.assertEqual(result["verdict"], CONFLICT)
+		self.assertIsNone(result["claimed"])
+		self.assertTrue(result["summary"].startswith("CONFLICT: Email is on"), result["summary"])
+
+	def test_excluded_country(self):
+		result = check_one(whatsapp="0772 123456", whatsapp_country="Uganda", claim=1)
+		self.assertEqual(result["verdict"], EXCLUDED_COUNTRY)
+		self.assertIsNone(result["claimed"])
+		self.assertIn("Uganda", result["summary"])
+
+	def test_invalid_input_is_refused_with_a_friendly_message(self):
+		with self.assertRaisesRegex(frappe.ValidationError, "Add the country code"):
+			check_one(whatsapp="0772 123456")
+		with self.assertRaisesRegex(frappe.ValidationError, "doesn't look right"):
+			check_one(email="name@company")
+		with self.assertRaisesRegex(frappe.ValidationError, "Enter an email or a WhatsApp number"):
+			check_one(company="Only a name")
+		self.assertEqual(validate_whatsapp("0772 123456", "Uganda"), {"whatsapp": UG, "country": "Uganda"})
+		self.assertIn("Add the country code", validate_whatsapp("0772 123456")["error"])
 
 
 class TestMigratedData(FrappeTestCase):

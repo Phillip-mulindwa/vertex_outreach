@@ -7,3 +7,6 @@ vertex_outreach.patches.v1_1.backfill_lead_email
 # Patches added in this section will be executed after doctypes are migrated
 vertex_outreach.patches.v1_0.remove_partner_domain
 vertex_outreach.patches.v1_1.outreach_leads
+vertex_outreach.patches.v1_2.rename_upload_types
+vertex_outreach.patches.v1_2.signed_partner_series
+vertex_outreach.patches.v1_2.backfill_whatsapp_country

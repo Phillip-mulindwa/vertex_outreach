@@ -4,9 +4,9 @@
 """Import a whole folder of lead files (emails and/or WhatsApp numbers) from the command line.
 
 	bench --site <site> execute vertex_outreach.bulk.import_folder \
-		--kwargs "{'path': '/path/to/folder', 'upload_type': 'Already Contacted'}"
+		--kwargs "{'path': '/path/to/folder', 'upload_type': 'Past contacts (history)'}"
 
-Each file becomes its own Email Upload (with the file attached privately) and is processed
+Each file becomes its own upload (Email Upload, shown as "Upload a list") (with the file attached privately) and is processed
 synchronously by the same code the background job uses, so Desk shows per-file history and counts.
 """
 
@@ -15,10 +15,14 @@ import time
 
 import frappe
 
-from vertex_outreach.vertex_outreach.doctype.email_upload.email_upload import process_upload
+from vertex_outreach.vertex_outreach.doctype.email_upload.email_upload import (
+	OLD_UPLOAD_TYPES,
+	PAST_CONTACTS,
+	UPLOAD_TYPES,
+	process_upload,
+)
 
 EXTENSIONS = (".csv", ".xlsx", ".xlsm", ".pdf", ".txt")
-UPLOAD_TYPES = ("Scraped Leads", "Already Contacted", "Signed Partners")
 COUNT_FIELDS = (
 	"total_found",
 	"new_count",
@@ -32,13 +36,14 @@ COUNT_FIELDS = (
 
 def import_folder(
 	path: str,
-	upload_type: str = "Already Contacted",
+	upload_type: str = PAST_CONTACTS,
 	source: str | None = None,
 	default_country: str | None = None,
 ):
 	root = os.path.abspath(os.path.expanduser(path))
 	if not os.path.isdir(root):
 		frappe.throw(f"Not a folder: {root}")
+	upload_type = OLD_UPLOAD_TYPES.get(upload_type, upload_type)
 	if upload_type not in UPLOAD_TYPES:
 		frappe.throw(f"upload_type must be one of: {', '.join(UPLOAD_TYPES)}")
 

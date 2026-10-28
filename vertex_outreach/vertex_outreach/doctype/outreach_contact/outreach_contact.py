@@ -74,14 +74,17 @@ class OutreachContact(Document):
 			self.email = self.domain = None
 
 		if raw := (self.whatsapp or "").strip():
-			phone = normalize_phone(raw, country_region(self.country))
+			phone = normalize_phone(
+				raw, country_region(self.whatsapp_country) or country_region(self.country)
+			)
 			if not phone.e164:
 				frappe.throw(
 					_("{0} is not a valid WhatsApp number: {1}").format(escape_html(raw), _(phone.error)),
 					title=_("Invalid WhatsApp number"),
 				)
 			self.whatsapp, self._phone_region = phone.e164, phone.region
-			self.country = self.country or country_name(phone.region)
+			self.whatsapp_country = country_name(phone.region) or self.whatsapp_country
+			self.country = self.country or self.whatsapp_country
 		else:
 			self.whatsapp = None
 

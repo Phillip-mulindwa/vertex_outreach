@@ -27,13 +27,14 @@
  ],
  "fields": [
   {
-   "default": "Scraped Leads",
+   "default": "New leads to check",
+   "description": "<b>New leads to check</b>: claims the leads nobody has yet and gives you a clean file of them.<br><b>Past contacts (history)</b>: records people already contacted, so nobody contacts them again.<br><b>Signed partners</b>: marks these as signed partners, so they are never cold-contacted.",
    "fieldname": "upload_type",
    "fieldtype": "Select",
    "in_list_view": 1,
    "in_standard_filter": 1,
    "label": "Upload Type",
-   "options": "Scraped Leads\nAlready Contacted\nSigned Partners",
+   "options": "New leads to check\nPast contacts (history)\nSigned partners",
    "reqd": 1
   },
   {
@@ -161,7 +162,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-28 12:00:00.000000",
+ "modified": "2026-10-28 15:00:00.000000",
  "modified_by": "Administrator",
  "module": "Vertex Outreach",
  "name": "Email Upload",

@@ -4,45 +4,96 @@
 import frappe
 from frappe import _
 from frappe.model.document import Document
-from frappe.utils import getdate, today
+from frappe.utils import escape_html, getdate, today
 
-from vertex_outreach.contacts import CONTACT, CONTACTED, SIGNED, mark_leads_signed
-from vertex_outreach.identifiers import LeadInput, normalize_email
+from vertex_outreach.contacts import (
+	CONTACT,
+	CONTACTED,
+	SIGNED,
+	country_name,
+	country_region,
+	find_leads,
+	lead_conflict_message,
+	upsert_partner_lead,
+)
+from vertex_outreach.identifiers import LeadInput, normalize_email, normalize_phone
 
 
 class SignedPartner(Document):
-	def before_naming(self):
-		# Naming runs before validate; normalize first so the record ID is the canonical email
-		self._normalize_email()
-
 	def validate(self):
-		self._normalize_email()
+		self._normalize_identifiers()
 		self.signed_on = self.signed_on or today()
-		if self.is_new() and frappe.db.exists(self.doctype, self.email):
-			existing = frappe.db.get_value(
-				self.doctype, self.email, ["organization", "signed_on"], as_dict=True
-			)
+		self._check_duplicates()
+		by_email, by_whatsapp = find_leads([self.email], [self.whatsapp])
+		email_lead, whatsapp_lead = by_email.get(self.email), by_whatsapp.get(self.whatsapp)
+		if email_lead and whatsapp_lead and email_lead.name != whatsapp_lead.name:
 			frappe.throw(
-				_("{0} is already a signed partner ({1}, signed {2}).").format(
-					self.email,
-					existing.organization or _("no organization"),
-					getdate(existing.signed_on).strftime("%-d %b %Y"),
-				),
-				title=_("Already a signed partner"),
-				exc=frappe.DuplicateEntryError,
+				escape_html(lead_conflict_message(email_lead, whatsapp_lead)),
+				title=_("Conflict between two leads"),
 			)
 
 	def on_update(self):
-		lead = LeadInput(input=self.email, email=self.email, organization=self.organization)
-		mark_leads_signed([lead], user=frappe.session.user, source="Signed Partner")
+		lead = LeadInput(
+			input=self.email or self.whatsapp,
+			organization=self.organization,
+			email=self.email,
+			whatsapp=self.whatsapp,
+			region=country_region(self.whatsapp_country),
+		)
+		upsert_partner_lead(lead, user=frappe.session.user, source="Signed Partner")
 
 	def on_trash(self):
-		lead = frappe.db.get_value(CONTACT, {"email": self.email}, ["name", "status"], as_dict=True)
-		if lead and lead.status == SIGNED:
-			frappe.db.set_value(CONTACT, lead.name, "status", CONTACTED)
+		for field in ("email", "whatsapp"):
+			if value := self.get(field):
+				lead = frappe.db.get_value(CONTACT, {field: value}, ["name", "status"], as_dict=True)
+				if lead and lead.status == SIGNED:
+					frappe.db.set_value(CONTACT, lead.name, "status", CONTACTED)
 
-	def _normalize_email(self):
-		email = normalize_email(self.email or "")
-		if not email:
-			frappe.throw(_("{0} is not a valid email address").format(self.email), title=_("Invalid email"))
-		self.email = email
+	def _normalize_identifiers(self):
+		if raw := (self.email or "").strip():
+			self.email = normalize_email(raw)
+			if not self.email:
+				frappe.throw(
+					_("{0} is not a valid email address").format(escape_html(raw)), title=_("Invalid email")
+				)
+		else:
+			self.email = None
+
+		if raw := (self.whatsapp or "").strip():
+			phone = normalize_phone(raw, country_region(self.whatsapp_country))
+			if not phone.e164:
+				frappe.throw(
+					_("{0} is not a valid WhatsApp number: {1}").format(escape_html(raw), _(phone.error)),
+					title=_("Invalid WhatsApp number"),
+				)
+			self.whatsapp = phone.e164
+			self.whatsapp_country = country_name(phone.region) or self.whatsapp_country
+		else:
+			self.whatsapp = None
+
+		if not self.email and not self.whatsapp:
+			frappe.throw(_("Enter an email, a WhatsApp number, or both."), title=_("Missing identifier"))
+
+	def _check_duplicates(self):
+		for field, label in (("email", _("email")), ("whatsapp", _("WhatsApp number"))):
+			value = self.get(field)
+			if not value:
+				continue
+			other = frappe.db.get_value(
+				self.doctype,
+				{field: value, "name": ["!=", self.name]},
+				["name", "organization", "signed_on"],
+				as_dict=True,
+			)
+			if other:
+				frappe.throw(
+					_("This {0} ({1}) is already on signed partner {2} ({3}, signed {4}).").format(
+						label,
+						value,
+						other.name,
+						escape_html(other.organization or _("no organization")),
+						getdate(other.signed_on).strftime("%-d %b %Y"),
+					),
+					title=_("Already a signed partner"),
+					exc=frappe.DuplicateEntryError,
+				)

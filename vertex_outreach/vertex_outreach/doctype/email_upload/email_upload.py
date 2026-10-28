@@ -30,6 +30,17 @@ from vertex_outreach.identifiers import LeadInput, parse_file
 
 JOB_TIMEOUT = 60 * 60
 
+NEW_LEADS = "New leads to check"
+PAST_CONTACTS = "Past contacts (history)"
+SIGNED_PARTNERS = "Signed partners"
+UPLOAD_TYPES = (NEW_LEADS, PAST_CONTACTS, SIGNED_PARTNERS)
+# Upload types before they were renamed, for the migration and old command lines
+OLD_UPLOAD_TYPES = {
+	"Scraped Leads": NEW_LEADS,
+	"Already Contacted": PAST_CONTACTS,
+	"Signed Partners": SIGNED_PARTNERS,
+}
+
 
 class EmailUpload(Document):
 	def before_save(self):
@@ -72,12 +83,7 @@ def process_upload(upload_name: str):
 				).format(filename)
 			)
 
-		handler = {
-			"Already Contacted": _process_already_contacted,
-			"Scraped Leads": _process_scraped_leads,
-			"Signed Partners": _process_signed_partners,
-		}[doc.upload_type]
-		counts = handler(doc, leads)
+		counts = HANDLERS[doc.upload_type](doc, leads)
 
 		doc.db_set(
 			{
@@ -113,16 +119,15 @@ def _read_attachment(doc) -> tuple[str, bytes | str]:
 
 
 def _process_signed_partners(doc, items: list[LeadInput]) -> dict:
-	"""Upgrades/creates leads, and a Signed Partner record per email."""
+	"""Upgrades/creates leads, and a Signed Partner record per row (email, WhatsApp or both)."""
 	inserted, upgraded, conflicts = mark_leads_signed(
 		items, user=doc.owner, source=doc.source, email_upload=doc.name
 	)
-	partners: dict[str, str | None] = {}
 	conflict_ids = {id(item) for item in conflicts}
-	for item in items:
-		if item.email and id(item) not in conflict_ids and not partners.get(item.email):
-			partners[item.email] = item.organization
-	created, _updated = upsert_signed_partner_records(partners, user=doc.owner)
+	created, _updated, record_conflicts = upsert_signed_partner_records(
+		[item for item in items if id(item) not in conflict_ids], user=doc.owner
+	)
+	conflicts += record_conflicts
 	return {
 		"new_count": len(inserted),
 		"duplicate_count": len(upgraded),
@@ -134,7 +139,7 @@ def _process_signed_partners(doc, items: list[LeadInput]) -> dict:
 	}
 
 
-def _process_already_contacted(doc, items: list[LeadInput]) -> dict:
+def _process_past_contacts(doc, items: list[LeadInput]) -> dict:
 	"""Record every lead not yet in the system as Contacted; Claimed matches become Contacted too."""
 	infos = classify_rows(items)
 	new = [
@@ -157,7 +162,7 @@ def _process_already_contacted(doc, items: list[LeadInput]) -> dict:
 	}
 
 
-def _process_scraped_leads(doc, items: list[LeadInput]) -> dict:
+def _process_new_leads(doc, items: list[LeadInput]) -> dict:
 	"""Claim the fresh leads and hand them out as a clean file."""
 	infos = classify_rows(items)
 	# Another upload or check running at the same time may claim some of these between our check
@@ -176,6 +181,13 @@ def _process_scraped_leads(doc, items: list[LeadInput]) -> dict:
 		"clean_file": _attach_clean_csv(doc, claimed) if claimed else None,
 		"conflict_file": _attach_conflicts(doc, *zip(*conflicts, strict=True)) if conflicts else None,
 	}
+
+
+HANDLERS = {
+	NEW_LEADS: _process_new_leads,
+	PAST_CONTACTS: _process_past_contacts,
+	SIGNED_PARTNERS: _process_signed_partners,
+}
 
 
 def _attach_clean_csv(doc, claimed: list[tuple[LeadInput, dict]]) -> str:

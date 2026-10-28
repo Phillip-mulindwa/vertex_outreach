@@ -20,6 +20,7 @@ CONTACT = "Outreach Contact"
 SETTINGS = "Outreach Settings"
 SIGNED_PARTNER_DOCTYPE = "Signed Partner"
 NAME_PREFIX = "LEAD-"
+PARTNER_NAME_PREFIX = "SP-"
 NAME_DIGITS = 5
 CHUNK_SIZE = 1000
 INSERT_CHUNK_SIZE = 5000
@@ -38,6 +39,7 @@ CONTACT_FIELDS = [
 	"whatsapp",
 	"organization",
 	"country",
+	"whatsapp_country",
 	"status",
 	"source",
 	"uploaded_by",
@@ -173,7 +175,7 @@ def classify_rows(items: list[LeadInput]) -> list[dict]:
 		elif in_excluded := sorted(item.regions & excluded):
 			info = {
 				"verdict": EXCLUDED_COUNTRY,
-				"note": _("Excluded country: {0}").format(
+				"note": _("{0}: excluded in Outreach Settings, cannot be claimed").format(
 					", ".join(country_name(r) or r for r in in_excluded)
 				),
 			}
@@ -259,20 +261,22 @@ def full_names(users) -> dict[str, str]:
 	return names
 
 
-def new_lead_names(count: int) -> list[str]:
-	"""Reserve `count` consecutive LEAD-##### names from the same series the form uses."""
+def new_names(prefix: str, count: int) -> list[str]:
+	"""Reserve `count` consecutive PREFIX##### names from the same series the forms use."""
 	if not count:
 		return []
-	current = frappe.db.sql("SELECT `current` FROM `tabSeries` WHERE `name` = %s FOR UPDATE", NAME_PREFIX)
+	current = frappe.db.sql("SELECT `current` FROM `tabSeries` WHERE `name` = %s FOR UPDATE", prefix)
 	if current and current[0][0] is not None:
 		start = int(current[0][0])
-		frappe.db.sql(
-			"UPDATE `tabSeries` SET `current` = `current` + %s WHERE `name` = %s", (count, NAME_PREFIX)
-		)
+		frappe.db.sql("UPDATE `tabSeries` SET `current` = `current` + %s WHERE `name` = %s", (count, prefix))
 	else:
 		start = 0
-		frappe.db.sql("INSERT INTO `tabSeries` (`name`, `current`) VALUES (%s, %s)", (NAME_PREFIX, count))
-	return [f"{NAME_PREFIX}{n:0{NAME_DIGITS}d}" for n in range(start + 1, start + count + 1)]
+		frappe.db.sql("INSERT INTO `tabSeries` (`name`, `current`) VALUES (%s, %s)", (prefix, count))
+	return [f"{prefix}{n:0{NAME_DIGITS}d}" for n in range(start + 1, start + count + 1)]
+
+
+def new_lead_names(count: int) -> list[str]:
+	return new_names(NAME_PREFIX, count)
 
 
 def insert_leads(
@@ -302,7 +306,8 @@ def insert_leads(
 			email_domain(item.email) if item.email else None,
 			item.whatsapp,
 			item.organization,
-			country_name(item.region or item.country),
+			country_name(item.country or item.region),
+			country_name(item.region),
 			status,
 			source,
 			user,
@@ -411,24 +416,119 @@ def mark_leads_signed(
 	return inserted, upgraded, conflicts
 
 
+def lead_conflict_message(email_lead, whatsapp_lead) -> str:
+	"""Plain text explaining that an email and a number belong to two different leads."""
+	names = full_names({lead.uploaded_by or lead.owner for lead in (email_lead, whatsapp_lead)})
+	return _(
+		"The email is on {0} and the WhatsApp number is on {1}. A manager needs to review this conflict."
+	).format(
+		describe_lead(lead_details(email_lead, names)), describe_lead(lead_details(whatsapp_lead, names))
+	)
+
+
+def upsert_partner_lead(item: LeadInput, *, user: str, source: str | None = None) -> list[str]:
+	"""Put a signed partner's email and WhatsApp number on Signed Partner leads. Returns the lead names.
+
+	The lead matched by either identifier is upgraded, and gets the organization and any identifier
+	it lacks. An identifier it already holds a different value for goes on a new lead of its own,
+	so every identifier of the partner is blocked. Throws when the email and number belong to two
+	different leads.
+	"""
+	by_email, by_whatsapp = find_leads([item.email], [item.whatsapp], fields=[*LEAD_FIELDS, "signed_on"])
+	email_lead, whatsapp_lead = by_email.get(item.email), by_whatsapp.get(item.whatsapp)
+	if email_lead and whatsapp_lead and email_lead.name != whatsapp_lead.name:
+		frappe.throw(lead_conflict_message(email_lead, whatsapp_lead), title=_("Conflict"))
+
+	lead = email_lead or whatsapp_lead
+	if not lead:
+		names = [n for n in insert_leads([item], SIGNED, user=user, source=source) if n]
+		if not names:
+			frappe.throw(_("Someone added this email or number a moment ago. Please save again."))
+		return names
+
+	values = {"status": SIGNED, "signed_on": lead.signed_on or now()}
+	if item.organization:
+		values["organization"] = item.organization
+	extra = []
+	if item.email and not lead.email:
+		values.update(email=item.email, domain=email_domain(item.email))
+	elif item.email and lead.email != item.email:
+		extra.append(LeadInput(input=item.email, email=item.email, organization=item.organization))
+	if item.whatsapp and not lead.whatsapp:
+		values.update(whatsapp=item.whatsapp, whatsapp_country=country_name(item.region))
+	elif item.whatsapp and lead.whatsapp != item.whatsapp:
+		extra.append(
+			LeadInput(
+				input=item.whatsapp,
+				whatsapp=item.whatsapp,
+				region=item.region,
+				organization=item.organization,
+			)
+		)
+	frappe.db.set_value(CONTACT, lead.name, values)
+	return [lead.name, *(n for n in insert_leads(extra, SIGNED, user=user, source=source) if n)]
+
+
+def find_partner_records(emails, whatsapps) -> tuple[dict, dict]:
+	"""({email: record}, {whatsapp: record}) for existing Signed Partner records, in chunks."""
+	by_email, by_whatsapp = {}, {}
+	fields = ["name", "email", "whatsapp", "organization"]
+	for field, values, found in (("email", emails, by_email), ("whatsapp", whatsapps, by_whatsapp)):
+		for chunk in chunks(sorted({v for v in values if v})):
+			for row in frappe.get_all(SIGNED_PARTNER_DOCTYPE, filters={field: ["in", chunk]}, fields=fields):
+				found[row[field]] = row
+	return by_email, by_whatsapp
+
+
 def upsert_signed_partner_records(
-	partners: dict[str, str | None], *, user: str
-) -> tuple[list[str], list[str]]:
-	"""Create a Signed Partner record per email, or update its organization. Returns (created, updated)."""
-	emails = list(partners)
-	known = set()
-	for chunk in chunks(emails):
-		known.update(frappe.get_all(SIGNED_PARTNER_DOCTYPE, filters={"name": ["in", chunk]}, pluck="name"))
-	created = [e for e in emails if e not in known]
+	items: list[LeadInput], *, user: str
+) -> tuple[list[str], list[str], list[LeadInput]]:
+	"""Create a Signed Partner record per item, matched by email OR WhatsApp, or update its organization.
+
+	Returns (created, updated, items whose email and number are on two different records).
+	"""
+	by_email, by_whatsapp = find_partner_records([i.email for i in items], [i.whatsapp for i in items])
+	organizations: dict[str, str | None] = {}
+	new, conflicts = [], []
+	for item in items:
+		by_e, by_w = by_email.get(item.email), by_whatsapp.get(item.whatsapp)
+		if by_e and by_w and by_e.name != by_w.name:
+			conflicts.append(item)
+		elif record := by_e or by_w:
+			organizations[record.name] = item.organization or organizations.get(record.name)
+		else:
+			new.append(item)
+
 	ts = now()
+	names = new_names(PARTNER_NAME_PREFIX, len(new))
 	bulk_insert_ignore(
 		SIGNED_PARTNER_DOCTYPE,
-		["name", "email", "organization", "signed_on", "owner", "modified_by", "creation", "modified"],
-		((e, e, partners[e], getdate(ts), user, user, ts, ts) for e in created),
+		[
+			"name",
+			"email",
+			"whatsapp",
+			"whatsapp_country",
+			"organization",
+			"signed_on",
+			"owner",
+			"modified_by",
+			"creation",
+			"modified",
+		],
+		(
+			(n, i.email, i.whatsapp, country_name(i.region), i.organization, getdate(ts), user, user, ts, ts)
+			for n, i in zip(names, new, strict=True)
+		),
 	)
-	updated = [e for e in emails if e in known]
-	bulk_update_with_organization(SIGNED_PARTNER_DOCTYPE, [e for e in updated if partners[e]], partners, {})
-	return created, updated
+	created = set()
+	for chunk in chunks(names):
+		created.update(frappe.get_all(SIGNED_PARTNER_DOCTYPE, filters={"name": ["in", chunk]}, pluck="name"))
+
+	updated = list(organizations)
+	bulk_update_with_organization(
+		SIGNED_PARTNER_DOCTYPE, [n for n in updated if organizations[n]], organizations, {}
+	)
+	return [n for n in names if n in created], updated, conflicts
 
 
 def bulk_update_with_organization(doctype: str, names: list[str], organizations: dict, values: dict):
