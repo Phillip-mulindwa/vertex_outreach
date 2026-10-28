@@ -125,6 +125,11 @@ bench --site <site> run-tests --module vertex_outreach.tests.test_leads
 
 ### Contributing
 
+The desk helpers (`public/js/check_leads.js`) ship as `vertex_outreach.bundle.js`, so after changing
+them run `bench build --app vertex_outreach`. The built file has a content hash in its name, so
+browsers pick up the new version instead of a cached copy.
+
+
 This app uses `pre-commit` for code formatting and linting. Please [install pre-commit](https://pre-commit.com/#installation) and enable it for this repository:
 
 ```bash

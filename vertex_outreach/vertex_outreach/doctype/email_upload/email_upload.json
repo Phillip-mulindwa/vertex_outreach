@@ -52,6 +52,7 @@
    "description": "For WhatsApp numbers without a country code, when the row has no Country column.",
    "fieldname": "default_country",
    "fieldtype": "Link",
+   "ignore_user_permissions": 1,
    "label": "Default Country",
    "options": "Country"
   },
@@ -162,7 +163,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-28 15:00:00.000000",
+ "modified": "2026-10-28 16:00:00.000000",
  "modified_by": "Administrator",
  "module": "Vertex Outreach",
  "name": "Email Upload",

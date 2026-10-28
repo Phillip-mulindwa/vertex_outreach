@@ -52,6 +52,7 @@
    "description": "Where the company is based. Filled in from the WhatsApp number when empty.",
    "fieldname": "country",
    "fieldtype": "Link",
+   "ignore_user_permissions": 1,
    "in_standard_filter": 1,
    "label": "Company Country",
    "options": "Country"
@@ -78,6 +79,7 @@
    "description": "Used when the number has no country code. Filled in from the number.",
    "fieldname": "whatsapp_country",
    "fieldtype": "Link",
+   "ignore_user_permissions": 1,
    "label": "WhatsApp Country",
    "options": "Country"
   },
@@ -195,7 +197,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-28 15:00:00.000000",
+ "modified": "2026-10-28 16:00:00.000000",
  "modified_by": "Administrator",
  "module": "Vertex Outreach",
  "name": "Outreach Contact",

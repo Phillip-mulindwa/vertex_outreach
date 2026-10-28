@@ -466,3 +466,19 @@ class TestMigratedData(FrappeTestCase):
 		self.assertEqual({i["verdict"] for i in infos}, {ALREADY_CONTACTED})
 		self.assertEqual({i["matched_on"] for i in infos}, {"Email"})
 		self.assertEqual({i["lead"] for i in infos}, {row.name for row in legacy})
+
+
+class TestDeskAssets(FrappeTestCase):
+	def test_shared_desk_js_is_a_bundle(self):
+		"""A plain /assets/... path is cached by browsers for 12h with no version in the URL, so a stale
+		copy without newer helpers (make_single_check) broke Check Leads. Bundles get a hashed name."""
+		import os
+
+		from vertex_outreach import hooks
+
+		includes = hooks.app_include_js if isinstance(hooks.app_include_js, list) else [hooks.app_include_js]
+		for include in includes:
+			self.assertTrue(include.endswith(".bundle.js"), include)
+			self.assertTrue(os.path.exists(frappe.get_app_path("vertex_outreach", "public", "js", include)))
+		with open(frappe.get_app_path("vertex_outreach", "public", "js", "check_leads.js")) as f:
+			self.assertIn("vertex_outreach.make_single_check = function", f.read())
