@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import frappe
+from frappe.boot import get_bootinfo
+from frappe.desk.desk_page import getpage
 from frappe.desk.desktop import get_workspace_sidebar_items
 from frappe.tests.utils import FrappeTestCase
 
@@ -158,3 +160,72 @@ class TestCheckerDesk(CheckerTestCase):
 		bootinfo = boot()
 		access.trim_checker_boot(bootinfo)
 		self.assertEqual(bootinfo, boot())
+
+
+def desk_opens(bootinfo, path):
+	"""Where checker_routes.js sends an /app path: the path itself, or Check Leads."""
+	first = path.split("?")[0].removeprefix("/app").strip("/").split("/")[0]
+	allowed = bootinfo.get("checker_routes")
+	if allowed is None or not first or first in allowed:
+		return path
+	return f"/app/{bootinfo['checker_home']}"
+
+
+class TestCheckerRoutes(CheckerTestCase):
+	def setUp(self):
+		# runs after the rollback, so the Page permissions cache matches the database again
+		self.addCleanup(frappe.clear_cache, doctype="Page")
+		super().setUp()
+		access.restrict_standard_workspaces()
+		# a stopgap read rule on Page for checkers; nothing here may depend on it
+		frappe.db.delete("Custom DocPerm", {"parent": "Page", "role": access.OUTREACH_USER})
+		frappe.clear_cache(doctype="Page")
+
+	def boot(self, user):
+		"""The bootinfo a fresh desk session gets, with this app's boot_session hook applied."""
+		frappe.set_user(user)
+		return get_bootinfo()
+
+	def test_checker_opening_admin_routes_lands_on_check_leads(self):
+		bootinfo = self.boot(CHECKER)
+
+		for path in (
+			"/app/user?enabled=1&user_type=System+User",
+			"/app/user",
+			"/app/email-upload",
+			"/app/email-upload/new",
+			"/app/outreach-admin",
+			"/app/leaderboard",
+		):
+			self.assertEqual(desk_opens(bootinfo, path), access.CHECK_LEADS_ROUTE, path)
+		for path in ("/app", access.CHECK_LEADS_ROUTE, "/app/outreach", "/app/outreach-contact/view/list"):
+			self.assertEqual(desk_opens(bootinfo, path), path)
+
+		# without the guard the desk would look /app/user up as a Page
+		with self.assertRaises((frappe.PermissionError, frappe.DoesNotExistError)):
+			getpage("user")
+		frappe.clear_messages()
+
+	def test_fresh_checker_session_loads_check_leads_without_page_permission(self):
+		bootinfo = self.boot(CHECKER)
+		self.assertFalse(frappe.has_permission("Page", "read"))
+
+		# the login response lands checkers on Check Leads
+		with (
+			patch.object(frappe, "request", SimpleNamespace(path="/api/method/login")),
+			patch.object(frappe.local, "response", frappe._dict(message="Logged In", home_page="/app")),
+		):
+			access.send_checkers_to_check_leads()
+			self.assertEqual(frappe.local.response["home_page"], access.CHECK_LEADS_ROUTE)
+		self.assertEqual(desk_opens(bootinfo, access.CHECK_LEADS_ROUTE), access.CHECK_LEADS_ROUTE)
+
+		# pageview.show: the Page meta comes from boot, then getpage loads the page
+		self.assertIn(("DocType", "Page"), [(d.doctype, d.name) for d in bootinfo.docs])
+		with patch.object(frappe.local, "response", frappe._dict(docs=[])):
+			getpage(access.CHECK_LEADS_PAGE)
+			(page,) = frappe.local.response.docs
+		self.assertEqual(page.name, access.CHECK_LEADS_PAGE)
+		self.assertIn("on_page_load", page.script)
+
+	def test_managers_get_no_route_guard(self):
+		self.assertNotIn("checker_routes", self.boot(MANAGER))

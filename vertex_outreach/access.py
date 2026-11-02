@@ -8,6 +8,7 @@ the desk from offering what a checker can't or shouldn't use.
 """
 
 import frappe
+from frappe.desk.utils import slug
 
 OUTREACH_USER = "Outreach User"
 ADMIN_ROLES = ("System Manager", "Outreach Manager")
@@ -15,7 +16,8 @@ WORKSPACE_ROLE = "System Manager"
 OWN_MODULE = "Vertex Outreach"
 # Frappe's fallback when a user may open no other workspace; never listed in the sidebar
 FALLBACK_WORKSPACE = "Welcome Workspace"
-CHECK_LEADS_ROUTE = "/app/check-leads"
+CHECK_LEADS_PAGE = "check-leads"
+CHECK_LEADS_ROUTE = f"/app/{CHECK_LEADS_PAGE}"
 # What the awesome bar ("Search or type a command") still offers a checker
 CHECKER_SEARCH = ("Outreach Contact",)
 CHECKER_PAGES = ("check-leads", "print")
@@ -85,6 +87,19 @@ def trim_checker_boot(bootinfo):
 	# their own User is shared with them; without this the desk opens /app/user
 	user["can_read"] = [d for d in user["can_read"] if d != "User"]
 	bootinfo["page_info"] = {name: p for name, p in bootinfo["page_info"].items() if name in CHECKER_PAGES}
+	# read by the route guard in checker_routes.js
+	bootinfo["checker_routes"] = checker_routes(bootinfo)
+	bootinfo["checker_home"] = CHECK_LEADS_PAGE
+
+
+def checker_routes(bootinfo) -> list[str]:
+	"""The first /app/<segment> of every route a checker's desk can open: readable DocTypes, pages, workspaces.
+
+	Anything else the desk would look up as a Page, which needs read permission on Page."""
+	routes = {slug(d) for d in bootinfo["user"]["can_read"]}
+	routes.update(bootinfo["page_info"])
+	routes.update(slug(ws["name"]) for ws in bootinfo.get("allowed_workspaces") or [])
+	return sorted(routes)
 
 
 def user_query_conditions(user: str, doctype: str | None = None) -> str:
