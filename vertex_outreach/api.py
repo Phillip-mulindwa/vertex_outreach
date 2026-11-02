@@ -43,8 +43,9 @@ def check_leads(text: str, claim: int = 0, default_country: str | None = None):
 	"summary": {verdict: count}, "claimed": [names of leads created by this call]}.
 	"""
 	claim = cint(claim)
+	# Checkers may claim without create on Outreach Lead and see who has any lead, so the role
+	# is the gate and the lookups and inserts don't apply doctype permissions
 	frappe.only_for(ROLES)
-	frappe.has_permission(CONTACT, "create" if claim else "read", throw=True)
 
 	items = parse_text(text or "", _remember_country(default_country))
 	if len(items) > MAX_ITEMS_PER_CHECK:
@@ -89,8 +90,8 @@ def check_one(
 	"claimed" (the new lead's name, if any).
 	"""
 	claim = cint(claim)
+	# see check_leads
 	frappe.only_for(ROLES)
-	frappe.has_permission(CONTACT, "create" if claim else "read", throw=True)
 
 	region = _remember_country(whatsapp_country)
 	item = LeadInput(input="", organization=(company or "").strip() or None)
@@ -187,7 +188,9 @@ def mark_contacted(names):
 	if isinstance(names, str):
 		names = [names]
 	frappe.only_for(ROLES)
-	frappe.has_permission(CONTACT, "write", throw=True)
+	# per lead: an Outreach User may only write their own
+	for name in names:
+		frappe.has_permission(CONTACT, "write", doc=name, throw=True)
 	contacts.mark_contacted(names, last_contacted_on=now())
 	return len(names)
 

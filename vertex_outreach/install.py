@@ -3,6 +3,8 @@
 
 import frappe
 
+from vertex_outreach.access import restrict_standard_workspaces
+
 ROLES = ("Outreach User", "Outreach Manager")
 DEFAULT_EXCLUDED_COUNTRIES = ("Uganda", "South Africa")
 WEEKLY_REPORT = "Weekly outreach summary"
@@ -20,6 +22,8 @@ def ensure_role():
 def after_install():
 	setup_outreach_settings()
 	setup_weekly_report()
+	# a fresh site marks patches as done without running them
+	restrict_standard_workspaces()
 
 
 def setup_outreach_settings():

@@ -1,0 +1,73 @@
+{
+ "charts": [],
+ "content": "[{\"id\":\"hdr0000002\",\"type\":\"header\",\"data\":{\"text\":\"<span class=\\\"h4\\\"><b>Outreach Admin</b></span>\",\"col\":12}},{\"id\":\"shortcuta0\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Upload a list\",\"col\":3}},{\"id\":\"shortcuta1\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Outreach Lead\",\"col\":3}},{\"id\":\"shortcuta2\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Signed Partner\",\"col\":3}},{\"id\":\"shortcuta3\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Outreach Summary\",\"col\":3}},{\"id\":\"shortcuta4\",\"type\":\"shortcut\",\"data\":{\"shortcut_name\":\"Outreach Settings\",\"col\":3}}]",
+ "creation": "2026-11-02 12:00:00.000000",
+ "custom_blocks": [],
+ "docstatus": 0,
+ "doctype": "Workspace",
+ "for_user": "",
+ "hide_custom": 0,
+ "icon": "setting-gear",
+ "idx": 0,
+ "is_hidden": 0,
+ "label": "Outreach Admin",
+ "links": [],
+ "modified": "2026-11-02 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Vertex Outreach",
+ "name": "Outreach Admin",
+ "number_cards": [],
+ "owner": "Administrator",
+ "parent_page": "",
+ "public": 1,
+ "quick_lists": [],
+ "restrict_to_domain": "",
+ "roles": [
+  {
+   "role": "System Manager"
+  },
+  {
+   "role": "Outreach Manager"
+  }
+ ],
+ "sequence_id": 51.0,
+ "shortcuts": [
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "Upload a list",
+   "link_to": "Email Upload",
+   "stats_filter": "[]",
+   "type": "DocType"
+  },
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "Outreach Lead",
+   "link_to": "Outreach Contact",
+   "stats_filter": "[]",
+   "type": "DocType"
+  },
+  {
+   "color": "Grey",
+   "doc_view": "List",
+   "label": "Signed Partner",
+   "link_to": "Signed Partner",
+   "stats_filter": "[]",
+   "type": "DocType"
+  },
+  {
+   "color": "Grey",
+   "label": "Outreach Summary",
+   "link_to": "Outreach Summary",
+   "type": "Report"
+  },
+  {
+   "color": "Grey",
+   "label": "Outreach Settings",
+   "link_to": "Outreach Settings",
+   "type": "DocType"
+  }
+ ],
+ "title": "Outreach Admin"
+}

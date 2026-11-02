@@ -84,7 +84,12 @@ app_include_js = "vertex_outreach.bundle.js"
 
 before_install = "vertex_outreach.install.ensure_role"
 before_migrate = "vertex_outreach.install.ensure_role"
+after_migrate = "vertex_outreach.access.restrict_standard_workspaces"
+after_app_install = "vertex_outreach.access.after_app_install"
 after_install = "vertex_outreach.install.after_install"
+
+# Checkers' awesome bar
+boot_session = "vertex_outreach.access.trim_checker_boot"
 
 # Uninstallation
 # ------------
@@ -118,6 +123,9 @@ after_install = "vertex_outreach.install.after_install"
 # -----------
 # Permissions evaluated in scripted ways
 
+permission_query_conditions = {
+	"User": "vertex_outreach.access.user_query_conditions",
+}
 # permission_query_conditions = {
 # 	"Event": "frappe.desk.doctype.event.event.get_permission_query_conditions",
 # }
@@ -201,7 +209,7 @@ scheduler_events = {
 
 # Request Events
 # ----------------
-# before_request = ["vertex_outreach.utils.before_request"]
+before_request = ["vertex_outreach.access.send_checkers_to_check_leads"]
 # after_request = ["vertex_outreach.utils.after_request"]
 
 # Job Events
