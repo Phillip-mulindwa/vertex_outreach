@@ -1,7 +1,13 @@
 # Copyright (c) 2026, Vertex International Recruitment and contributors
 # For license information, please see license.txt
 
+import json
+import random
+import shutil
+import subprocess
+import uuid
 from datetime import timedelta
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import frappe
@@ -398,12 +404,13 @@ class TestCheckOne(LeadTestCase):
 		self.assertIn(lead.name, result["summary"])
 
 	def test_already_contacted(self):
-		self.make_lead(email="old@vo-test.example", whatsapp=KE, organization="Acme Travel")
+		lead = self.make_lead(email="old@vo-test.example", whatsapp=KE, organization="Acme Travel")
 		result = check_one(email="other@vo-test.example", whatsapp="+254 712 123 456")
 		self.assertEqual(result["verdict"], ALREADY_CONTACTED)
 		self.assertRegex(
 			result["summary"],
-			r"^ALREADY CONTACTED: matched on WhatsApp \+254712123456, by Administrator on \d+ \w+ \d{4}, company Acme Travel$",
+			rf"^ALREADY CONTACTED — Matched on WhatsApp: \+254712123456 → {lead.name} \(Acme Travel\), "
+			r"contacted by Administrator on \d+ \w+ \d{4}$",
 		)
 		self.assertEqual(result["note"], "The lead has a different email: old@vo-test.example")
 
@@ -412,7 +419,10 @@ class TestCheckOne(LeadTestCase):
 		result = check_one(email="partner@vo-test.example")
 		self.assertEqual(result["verdict"], SIGNED_PARTNER)
 		self.assertTrue(
-			result["summary"].startswith("SIGNED PARTNER: matched on Email partner@vo-test.example")
+			result["summary"].startswith(
+				"SIGNED PARTNER — Matched on Email: partner@vo-test.example → LEAD-"
+			),
+			result["summary"],
 		)
 
 	def test_do_not_contact(self):
@@ -425,7 +435,11 @@ class TestCheckOne(LeadTestCase):
 		result = check_one(email="one@vo-test.example", whatsapp=KE, claim=1)
 		self.assertEqual(result["verdict"], CONFLICT)
 		self.assertIsNone(result["claimed"])
-		self.assertTrue(result["summary"].startswith("CONFLICT: Email is on"), result["summary"])
+		self.assertRegex(
+			result["summary"],
+			r"^CONFLICT — Matched on Email: one@vo-test.example → LEAD-\d+, contacted by .*; "
+			rf"Matched on WhatsApp: \{KE} → LEAD-\d+",
+		)
 
 	def test_excluded_country(self):
 		result = check_one(whatsapp="0772 123456", whatsapp_country="Uganda", claim=1)
@@ -546,3 +560,258 @@ class TestDeskAssets(FrappeTestCase):
 			self.assertTrue(os.path.exists(frappe.get_app_path("vertex_outreach", "public", "js", include)))
 		with open(frappe.get_app_path("vertex_outreach", "public", "js", "check_leads.js")) as f:
 			self.assertIn("vertex_outreach.make_single_check = function", f.read())
+
+
+class TestStrictMatching(LeadTestCase):
+	"""The verdict comes only from an Outreach Lead whose email or WhatsApp number equals the
+	normalized input. Blanks, junk, company names and unpicked countries never match."""
+
+	COUNT = 200
+
+	def setUp(self):
+		super().setUp()
+		self.random = random.Random(20261102)
+		# Leads with one identifier missing, as NULL and as '' (written around the controller,
+		# as old imports or direct SQL could have), plus a WhatsApp-only Signed Partner
+		self.make_lead(email="email-only@vo-strict.example", organization="Acme Travel")
+		self.make_lead(whatsapp=KE, organization="Number Only Co")
+		blank_whatsapp = self.make_lead(email="blank-whatsapp@vo-strict.example")
+		blank_email = self.make_lead(whatsapp=GB)
+		frappe.db.sql(f"UPDATE `tab{CONTACT}` SET `whatsapp` = '' WHERE `name` = %s", blank_whatsapp.name)
+		frappe.db.sql(f"UPDATE `tab{CONTACT}` SET `email` = '' WHERE `name` = %s", blank_email.name)
+		frappe.get_doc(
+			{"doctype": "Signed Partner", "organization": "Partner Co", "whatsapp": "+447400654321"}
+		).insert(ignore_permissions=True)
+
+	def new_emails(self):
+		domains = ["vo-strict.example", "gmail.com", "company-vo.com", "mail-vo.co.ke"]
+		emails = [f"{uuid.uuid4().hex[:12]}@{self.random.choice(domains)}" for _i in range(self.COUNT)]
+		self.assertFalse(frappe.get_all(CONTACT, filters={"email": ["in", emails]}))
+		return emails
+
+	def new_numbers(self):
+		numbers = set()
+		while len(numbers) < self.COUNT:
+			prefix, digits = self.random.choice([("+2547", 8), ("+447", 9)])
+			number = prefix + "".join(self.random.choices("0123456789", k=digits))
+			if normalize_phone(number).e164 == number:
+				numbers.add(number)
+		numbers = sorted(numbers)
+		self.assertFalse(frappe.get_all(CONTACT, filters={"whatsapp": ["in", numbers]}))
+		return numbers
+
+	def assert_all_fresh(self, results):
+		self.assertEqual(
+			[(r.get("input"), r["verdict"]) for r in results if r["verdict"] != FRESH], [], "not FRESH"
+		)
+		self.assertEqual(len(results), self.COUNT)
+
+	def test_new_emails_without_whatsapp_are_fresh(self):
+		emails = self.new_emails()
+		self.assert_all_fresh([check_one(email=e, whatsapp="", whatsapp_country="") for e in emails])
+		self.assert_all_fresh(check_leads("\n".join(emails))["results"])
+
+	def test_new_emails_with_new_numbers_are_fresh(self):
+		pairs = list(zip(self.new_emails(), self.new_numbers(), strict=True))
+		self.assert_all_fresh([check_one(email=e, whatsapp=w) for e, w in pairs])
+		self.assert_all_fresh(check_leads("\n".join(f"{e} {w}" for e, w in pairs))["results"])
+
+	def test_blank_identifiers_never_match(self):
+		for email, whatsapp in (("brand-new@vo-strict.example", ""), ("", "+254733111222")):
+			with self.subTest(email=email, whatsapp=whatsapp):
+				self.assertEqual(check_one(email=email, whatsapp=whatsapp)["verdict"], FRESH)
+		# '' or whitespace on the input side never looks anything up either
+		for blank in ("", " ", None):
+			items = [
+				LeadInput(input="x", email="brand-new@vo-strict.example", whatsapp=blank),
+				LeadInput(input="y", email=blank, whatsapp="+254733111222"),
+			]
+			self.assertEqual([i["verdict"] for i in classify_rows(items)], [FRESH, FRESH])
+		self.assertEqual(contacts.find_leads(["", None, " "], ["", None, " "]), ({}, {}))
+
+	def test_new_email_with_existing_whatsapp_matches_on_whatsapp(self):
+		lead = frappe.get_doc(CONTACT, {"whatsapp": KE})
+		result = check_one(email="brand-new@vo-strict.example", whatsapp="+254 712 123 456")
+		self.assertEqual(
+			(result["verdict"], result["matched_on"], result["lead"]),
+			(ALREADY_CONTACTED, "WhatsApp", lead.name),
+		)
+		self.assertTrue(
+			result["proof_text"].startswith(
+				f"Matched on WhatsApp: {KE} → {lead.name} (Number Only Co), contacted by"
+			),
+			result["proof_text"],
+		)
+
+	def test_existing_email_in_another_case_or_with_gmail_dots_matches_on_email(self):
+		gmail = self.make_lead(email="john.doe@gmail.com", organization="Doe Ltd")
+		self.assertEqual(gmail.email, "johndoe@gmail.com")
+		for typed, lead_name, stored in (
+			("J.O.H.N.D.O.E+promo@GoogleMail.com", gmail.name, "johndoe@gmail.com"),
+			("  John.Doe@Gmail.com ", gmail.name, "johndoe@gmail.com"),
+			("EMAIL-ONLY@VO-STRICT.example", None, "email-only@vo-strict.example"),
+		):
+			with self.subTest(typed=typed):
+				result = check_one(email=typed)
+				self.assertEqual((result["verdict"], result["matched_on"]), (ALREADY_CONTACTED, "Email"))
+				if lead_name:
+					self.assertEqual(result["lead"], lead_name)
+				self.assertIn(f"Matched on Email: {stored} → LEAD-", result["proof_text"])
+
+	def test_junk_whatsapp_is_left_out_not_matched(self):
+		for junk in ("abc", "12", "+1 23", "call me", "n/a", "0", "Acme Travel"):
+			with self.subTest(junk=junk):
+				result = check_one(email="brand-new@vo-strict.example", whatsapp=junk)
+				self.assertEqual((result["verdict"], result["whatsapp"]), (FRESH, None))
+				self.assertIn(f"WhatsApp {junk} was not checked", result["note"])
+		self.assertEqual(
+			[r["verdict"] for r in check_leads("brand-new@vo-strict.example abc 12")["results"]], [FRESH]
+		)
+
+	def test_no_country_is_assumed_for_a_number_without_one(self):
+		# +254712123456 is on a lead, but "0712 123456" is only Kenyan when Kenya is picked
+		result = check_one(email="brand-new@vo-strict.example", whatsapp="0712 123456")
+		self.assertEqual((result["verdict"], result["whatsapp"]), (FRESH, None))
+		self.assertIn("Add the country code", result["note"])
+		self.assertEqual(
+			check_one(whatsapp="0712 123456", whatsapp_country="Kenya")["verdict"], ALREADY_CONTACTED
+		)
+		self.assertEqual(
+			[r["verdict"] for r in check_leads("brand-new@vo-strict.example 0712 123456")["results"]],
+			[FRESH, "INVALID"],
+		)
+		frappe.defaults.set_user_default("outreach_default_country", "Kenya")
+		self.assertEqual(check_one(whatsapp="+254 733 111 222", whatsapp_country="")["verdict"], FRESH)
+		self.assertFalse(check_leads("0712 123456")["results"][0].get("lead"))
+
+	def test_company_name_is_only_a_note(self):
+		result = check_one(company="Acme Travel", email="brand-new@vo-strict.example")
+		self.assertEqual((result["verdict"], result["note"]), (FRESH, "1 other lead named Acme Travel"))
+		self.assertFalse(result.get("lead"))
+
+	def test_signed_partner_and_do_not_contact_show_their_proof(self):
+		partner = frappe.get_doc(CONTACT, {"whatsapp": "+447400654321"})
+		result = check_one(whatsapp="+44 7400 654321")
+		self.assertEqual(result["verdict"], SIGNED_PARTNER)
+		self.assertTrue(
+			result["proof_text"].startswith(
+				f"Matched on WhatsApp: +447400654321 → {partner.name} (Partner Co)"
+			)
+		)
+		self.make_lead(email="gone@vo-strict.example", status="Bounced")
+		result = check_one(email="gone@vo-strict.example")
+		self.assertEqual(result["verdict"], DO_NOT_CONTACT)
+		self.assertIn("Matched on Email: gone@vo-strict.example → LEAD-", result["summary"])
+
+	def test_proof_names_who_claimed_and_when(self):
+		from vertex_outreach.tests.test_access import make_user
+
+		make_user("damalie@vo-strict.example", "Outreach User")
+		frappe.db.set_value("User", "damalie@vo-strict.example", "full_name", "Damalie")
+		lead = self.make_lead(
+			email="claimed@vo-strict.example",
+			organization="Acme",
+			status=CLAIMED,
+			uploaded_by="damalie@vo-strict.example",
+		)
+		day = frappe.utils.getdate(lead.claimed_on).strftime("%-d %b %Y")
+		[row] = check_leads("claimed@vo-strict.example")["results"]
+		self.assertEqual(
+			row["proof_text"],
+			f"Matched on Email: claimed@vo-strict.example → {lead.name} (Acme), claimed by Damalie on {day}",
+		)
+		self.assertEqual(
+			row["proof"],
+			[
+				{
+					"matched_on": [["Email", "claimed@vo-strict.example"]],
+					"lead": lead.name,
+					"details": f" (Acme), claimed by Damalie on {day}",
+				}
+			],
+		)
+
+
+class TestCheckLeadsPayload(LeadTestCase):
+	"""Replays the payloads public/js/check_leads.js sends (captured by tests/js/single_check.test.js)
+	through the whitelisted API, as a checker."""
+
+	def setUp(self):
+		super().setUp()
+		node = shutil.which("node")
+		if not node:
+			self.skipTest("node is not installed")
+		script = frappe.get_app_path("vertex_outreach", "tests", "js", "single_check.test.js")
+		run = subprocess.run([node, script], capture_output=True, text=True, timeout=60)
+		self.assertEqual(run.returncode, 0, run.stderr)
+		self.payloads = json.loads(run.stdout)
+
+		from vertex_outreach.tests.test_access import CHECKER, make_user
+
+		make_user(CHECKER, "Outreach User")
+		existing = self.payloads["existing"]
+		self.lead = self.make_lead(
+			email=existing["email"], whatsapp=existing["whatsapp"], organization="Old Co"
+		)
+		self.addCleanup(frappe.set_user, "Administrator")
+		frappe.set_user(CHECKER)
+
+	def post(self, method, payload):
+		"""What /api/method/<method> does with the form the desk posts (every value a string)."""
+		from frappe.handler import execute_cmd
+
+		form = frappe._dict({k: str(v) for k, v in payload.items()})
+		with (
+			patch.object(frappe.local, "form_dict", form),
+			patch.object(frappe.local, "request", SimpleNamespace(method="POST"), create=True),
+		):
+			return execute_cmd(method)
+
+	def test_single_check_payloads(self):
+		existing = self.post("vertex_outreach.api.check_one", self.payloads["existing"])
+		self.assertEqual(
+			(existing["verdict"], existing["matched_on"], existing["lead"]),
+			(ALREADY_CONTACTED, "Email + WhatsApp", self.lead.name),
+		)
+		self.assertTrue(
+			existing["summary"].startswith(
+				f"ALREADY CONTACTED — Matched on Email: {self.lead.email} + WhatsApp: {KE} → {self.lead.name} (Old Co)"
+			),
+			existing["summary"],
+		)
+
+		fresh = self.post("vertex_outreach.api.check_one", self.payloads["fresh"])
+		self.assertEqual((fresh["verdict"], fresh["summary"]), (FRESH, "FRESH: no match"))
+		self.assertEqual(
+			fresh["checked"], {"company": None, "email": self.payloads["fresh"]["email"], "whatsapp": None}
+		)
+
+	def test_check_many_payload(self):
+		result = self.post("vertex_outreach.api.check_leads", self.payloads["many"])
+		self.assertEqual([r["verdict"] for r in result["results"]], [FRESH])
+
+
+class TestNormalizeIdentifiersPatch(LeadTestCase):
+	def test_blanks_become_null_and_values_canonical_idempotently(self):
+		from vertex_outreach.patches.v1_4 import normalize_lead_identifiers
+
+		blank = self.make_lead(email="blank-patch@vo-strict.example")
+		messy = self.make_lead(email="messy-patch@vo-strict.example")
+		taken = self.make_lead(email="taken.patch@gmail.com")
+		clash = self.make_lead(email="clash-patch@vo-strict.example")
+		set_raw = "UPDATE `tabOutreach Contact` SET `email` = %s, `whatsapp` = %s WHERE `name` = %s"
+		frappe.db.sql(set_raw, ("blank-patch@vo-strict.example", "  ", blank.name))
+		frappe.db.sql(set_raw, ("Messy.Patch+x@GoogleMail.com", "+254 712 123 456", messy.name))
+		frappe.db.sql(set_raw, ("Taken.Patch@gmail.com", None, clash.name))
+
+		for _run in range(2):
+			normalize_lead_identifiers.execute()
+			self.assertIsNone(frappe.db.get_value(CONTACT, blank.name, "whatsapp"))
+			self.assertEqual(
+				frappe.db.get_value(CONTACT, messy.name, ["email", "domain", "whatsapp"]),
+				("messypatch@gmail.com", "gmail.com", KE),
+			)
+			# its canonical form is on another lead: left for a manager, not merged or lost
+			self.assertEqual(frappe.db.get_value(CONTACT, clash.name, "email"), "Taken.Patch@gmail.com")
+			self.assertEqual(frappe.db.get_value(CONTACT, taken.name, "email"), "takenpatch@gmail.com")
+		self.assertEqual(check_one(email="messy.patch@gmail.com")["lead"], messy.name)

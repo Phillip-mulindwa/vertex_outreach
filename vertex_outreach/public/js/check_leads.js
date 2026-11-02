@@ -4,7 +4,7 @@
 frappe.provide("vertex_outreach");
 
 vertex_outreach.CHECK_ROLES = ["Outreach User", "Outreach Manager", "System Manager"];
-vertex_outreach.DEFAULT_COUNTRY_KEY = "outreach_default_country";
+vertex_outreach.MANAGER_ROLES = ["Outreach Manager", "System Manager"];
 
 vertex_outreach.VERDICT_COLOURS = {
 	FRESH: "green",
@@ -22,6 +22,11 @@ vertex_outreach.can_check_leads = function () {
 // Old name
 vertex_outreach.can_check_emails = vertex_outreach.can_check_leads;
 
+// Checkers see which lead matched, but only managers get a link to open it
+vertex_outreach.can_open_leads = function () {
+	return frappe.user.has_role(vertex_outreach.MANAGER_ROLES);
+};
+
 vertex_outreach.check_fields = function () {
 	return [
 		{
@@ -37,7 +42,7 @@ vertex_outreach.check_fields = function () {
 			fieldtype: "Link",
 			options: "Country",
 			label: __("Default country"),
-			default: frappe.defaults.get_user_default(vertex_outreach.DEFAULT_COUNTRY_KEY) || "",
+			// never prefilled: a number is only read in a country picked for this check
 			description: __("Used for numbers without a country code"),
 		},
 		{ fieldname: "results", fieldtype: "HTML" },
@@ -57,8 +62,6 @@ vertex_outreach.check_leads = function (values, claim, $results) {
 			freeze_message: claim ? __("Checking and claiming...") : __("Checking..."),
 		})
 		.then((r) => {
-			// the server remembers it; keep this session in step without a reload
-			frappe.boot.user.defaults[vertex_outreach.DEFAULT_COUNTRY_KEY] = values.default_country || "";
 			vertex_outreach.render_check_results(r.message, $results);
 			if (claim && r.message.claimed.length && window.cur_list?.doctype === "Outreach Contact") {
 				cur_list.refresh();
@@ -70,6 +73,24 @@ vertex_outreach.check_leads = function (values, claim, $results) {
 vertex_outreach.lead_link = function (lead, organization) {
 	const esc = frappe.utils.escape_html;
 	return `<a href="/app/outreach-contact/${encodeURIComponent(lead)}">${esc(organization || lead)}</a>`;
+};
+
+// The lead's ID: a link for managers, plain text for checkers
+vertex_outreach.lead_ref = function (lead) {
+	return vertex_outreach.can_open_leads()
+		? vertex_outreach.lead_link(lead)
+		: frappe.utils.escape_html(lead);
+};
+
+// "Matched on Email: x@y.com → LEAD-00123 (Acme), claimed by ... on ...", one line per matched lead
+vertex_outreach.proof_html = function (r) {
+	const esc = frappe.utils.escape_html;
+	return (r.proof || [])
+		.map((p) => {
+			const matched = p.matched_on.map(([kind, value]) => `${esc(__(kind))}: ${esc(value)}`).join(" + ");
+			return `${__("Matched on {0} → {1}", [matched, vertex_outreach.lead_ref(p.lead)])}${esc(p.details)}`;
+		})
+		.join("<br>");
 };
 
 vertex_outreach.render_check_results = function (data, $results) {
@@ -104,21 +125,17 @@ vertex_outreach.render_check_results = function (data, $results) {
 
 			let organization = "";
 			if (r.conflict) {
-				organization = r.conflict
-					.map((c) => `${vertex_outreach.lead_link(c.lead, c.organization)} (${esc(c.contacted_by_name)})`)
-					.join("<br>");
-			} else if (r.lead) {
-				organization = vertex_outreach.lead_link(r.lead, r.organization);
-				if (r.verdict === "SIGNED PARTNER") organization = `<b>${organization}</b>`;
+				organization = r.conflict.map((c) => esc(c.organization || "")).join("<br>");
 			} else if (r.organization) {
 				organization = esc(r.organization);
+				if (r.verdict === "SIGNED PARTNER") organization = `<b>${organization}</b>`;
 			}
 
 			return `<tr>
 				<td>${input}</td>
 				<td>${r.type ? esc(translate_parts(r.type)) : ""}</td>
 				<td>${verdict}</td>
-				<td>${r.matched_on ? esc(translate_parts(r.matched_on)) : ""}</td>
+				<td>${r.proof ? vertex_outreach.proof_html(r) : ""}</td>
 				<td>${organization}</td>
 				<td>${r.status ? esc(__(r.status)) : ""}</td>
 				<td>${r.contacted_by_name ? esc(r.contacted_by_name) : ""}</td>
@@ -139,7 +156,7 @@ vertex_outreach.render_check_results = function (data, $results) {
 		<div style="overflow-x: auto;">
 			<table class="table table-bordered table-sm" style="font-size: var(--text-sm);">
 				<thead><tr>
-					<th>${__("Input")}</th><th>${__("Type")}</th><th>${__("Verdict")}</th><th>${__("Matched on")}</th>
+					<th>${__("Input")}</th><th>${__("Type")}</th><th>${__("Verdict")}</th><th>${__("Proof")}</th>
 					<th>${__("Organization")}</th><th>${__("Status")}</th><th>${__("Contacted by")}</th>
 					<th>${__("When")}</th><th>${__("Note")}</th>
 				</tr></thead>
@@ -188,33 +205,28 @@ vertex_outreach.mark_contacted = function (names) {
 
 vertex_outreach.EMAIL_RE = /^[^\s@<>(),;:"]+@[^\s@<>(),;:"]+\.[a-z]{2,63}$/i;
 vertex_outreach.WHATSAPP_HINT = __("Include the country code, or pick the country.");
+vertex_outreach.SINGLE_CHECK_FIELDS = ["company", "email", "whatsapp", "whatsapp_country"];
 
 vertex_outreach.make_single_check = function ($parent) {
 	const fields = new frappe.ui.FieldGroup({
 		body: $parent,
 		fields: [
-			{ fieldname: "company", fieldtype: "Data", label: __("Company name"), onchange: () => clear_result() },
+			{ fieldname: "company", fieldtype: "Data", label: __("Company name") },
 			{
 				fieldname: "email",
 				fieldtype: "Data",
 				label: __("Email"),
 				placeholder: "name@company.com",
-				onchange: () => {
-					clear_result();
-					check_email();
-				},
+				onchange: () => check_email(),
 			},
 			{ fieldtype: "Column Break" },
 			{
+				// never prefilled: a number is only read in a country picked for this check
 				fieldname: "whatsapp_country",
 				fieldtype: "Link",
 				options: "Country",
 				label: __("WhatsApp country"),
-				default: frappe.defaults.get_user_default(vertex_outreach.DEFAULT_COUNTRY_KEY) || "",
-				onchange: () => {
-					clear_result();
-					check_whatsapp();
-				},
+				onchange: () => check_whatsapp(),
 			},
 			{
 				fieldname: "whatsapp",
@@ -222,10 +234,7 @@ vertex_outreach.make_single_check = function ($parent) {
 				label: __("WhatsApp number"),
 				placeholder: __("e.g. 772 123 456"),
 				description: vertex_outreach.WHATSAPP_HINT,
-				onchange: () => {
-					clear_result();
-					check_whatsapp();
-				},
+				onchange: () => check_whatsapp(),
 			},
 			{ fieldtype: "Section Break" },
 			{ fieldname: "result", fieldtype: "HTML" },
@@ -241,15 +250,25 @@ vertex_outreach.make_single_check = function ($parent) {
 			text ? `<span style="color: var(--${colour}-600)">${esc(text)}</span>` : ""
 		);
 	const value = (fieldname) => (fields.get_value(fieldname) || "").trim();
-	// A result is only ever shown for the input it was checked against
-	let showing_result = false;
-	const clear_result = () => {
-		if (showing_result) fields.fields_dict.result.$wrapper.empty();
-		showing_result = false;
-	};
+	// What the inputs hold right now: exactly what a check sends
+	const current_args = () => ({
+		company: value("company"),
+		email: value("email"),
+		whatsapp: value("whatsapp"),
+		whatsapp_country: value("whatsapp_country"),
+	});
+	const same_args = (a, b) => vertex_outreach.SINGLE_CHECK_FIELDS.every((f) => a[f] === b[f]);
 
-	function check_email() {
-		const email = value("email");
+	// A result is only ever shown for the input it was checked against: any keystroke clears it
+	// (not only the debounced change), and a response is dropped once the inputs have moved on
+	// or a newer check has started.
+	let latest_check = 0;
+	const clear_result = () => fields.fields_dict.result.$wrapper.empty();
+	for (const fieldname of vertex_outreach.SINGLE_CHECK_FIELDS) {
+		fields.fields_dict[fieldname].$input.on("input change", clear_result);
+	}
+
+	function check_email(email = value("email")) {
 		if (email && !vertex_outreach.EMAIL_RE.test(email)) {
 			say("email", __("That email doesn't look right. Check it for typos, e.g. name@company.com."), "red");
 			return false;
@@ -259,21 +278,20 @@ vertex_outreach.make_single_check = function ($parent) {
 	}
 
 	// Validated by the server's normalizer, the same one claiming uses
-	let latest = 0;
-	function check_whatsapp() {
-		const whatsapp = value("whatsapp");
+	let latest_validation = 0;
+	function check_whatsapp(whatsapp = value("whatsapp"), whatsapp_country = value("whatsapp_country")) {
 		if (!whatsapp) {
 			fields.set_df_property("whatsapp", "description", vertex_outreach.WHATSAPP_HINT);
 			return Promise.resolve(true);
 		}
-		const call = ++latest;
+		const call = ++latest_validation;
 		return frappe
 			.call({
 				method: "vertex_outreach.api.validate_whatsapp",
-				args: { whatsapp, whatsapp_country: fields.get_value("whatsapp_country") || "" },
+				args: { whatsapp, whatsapp_country },
 			})
 			.then((r) => {
-				if (call !== latest) return !r.message.error;
+				if (call !== latest_validation) return !r.message.error;
 				if (r.message.error) {
 					say("whatsapp", r.message.error, "red");
 					return false;
@@ -284,60 +302,69 @@ vertex_outreach.make_single_check = function ($parent) {
 	}
 
 	function run(claim) {
-		if (!value("email") && !value("whatsapp")) {
+		const args = current_args();
+		const check = ++latest_check;
+		clear_result();
+		if (!args.email && !args.whatsapp) {
 			say("email", __("Enter an email or a WhatsApp number."), "red");
-			return;
+			return Promise.resolve();
 		}
-		if (!check_email()) return;
-		return check_whatsapp().then((ok) => {
-			if (!ok) return;
+		if (!check_email(args.email)) return Promise.resolve();
+		return check_whatsapp(args.whatsapp, args.whatsapp_country).then((ok) => {
+			if (!ok || check !== latest_check) return;
 			return frappe
 				.call({
 					method: "vertex_outreach.api.check_one",
-					args: {
-						company: value("company"),
-						email: value("email"),
-						whatsapp: value("whatsapp"),
-						whatsapp_country: fields.get_value("whatsapp_country") || "",
-						claim: claim ? 1 : 0,
-					},
+					args: { ...args, claim: claim ? 1 : 0 },
 					freeze: true,
 					freeze_message: claim ? __("Checking and claiming...") : __("Checking..."),
 				})
 				.then((r) => {
-					frappe.boot.user.defaults[vertex_outreach.DEFAULT_COUNTRY_KEY] =
-						fields.get_value("whatsapp_country") || "";
+					if (check !== latest_check || !same_args(args, current_args())) return;
 					// Cleared first, so clearing the inputs doesn't also clear the claim's result
 					const cleared = r.message.claimed
 						? fields.set_values({ company: "", email: "", whatsapp: "" })
 						: Promise.resolve();
-					return cleared.then(() => {
-						vertex_outreach.render_single_result(r.message, fields.fields_dict.result.$wrapper);
-						showing_result = true;
-					});
+					return cleared.then(() =>
+						vertex_outreach.render_single_result(r.message, fields.fields_dict.result.$wrapper)
+					);
 				});
 		});
 	}
 
-	return { fields, run };
+	return { fields, run, current_args };
 };
 
 vertex_outreach.render_single_result = function (r, $result) {
 	const esc = frappe.utils.escape_html;
 	const colour = vertex_outreach.VERDICT_COLOURS[r.verdict] || "gray";
-	let links = "";
-	if (r.conflict) {
-		links = r.conflict.map((c) => vertex_outreach.lead_link(c.lead, `${c.lead}: ${c.organization || ""}`)).join(" · ");
-	} else if (r.lead) {
-		links = vertex_outreach.lead_link(r.lead, __("Open lead {0}", [r.lead]));
+	const proof = vertex_outreach.proof_html(r);
+	let open = "";
+	if (r.claimed && vertex_outreach.can_open_leads()) {
+		open = vertex_outreach.lead_link(r.claimed, __("Open lead {0}", [r.claimed]));
 	}
+	// Exactly what the server looked up, so a number left over from the last lead can't hide
+	const checked = r.checked || {};
+	const checked_parts = [
+		[__("Email"), checked.email],
+		[__("WhatsApp"), checked.whatsapp],
+		[__("Company"), checked.company],
+	]
+		.filter(([, v]) => v)
+		.map(([label, v]) => `${esc(label)}: ${esc(v)}`);
 	const note = r.note && !r.summary.includes(r.note) ? r.note : "";
 	$result.html(`
 		<div style="margin-top: var(--margin-md); padding: var(--padding-md) var(--padding-lg);
 			border: 1px solid var(--border-color); border-left: 4px solid var(--${colour}-500);
 			border-radius: var(--border-radius-md);">
-			<div style="font-size: var(--text-lg); font-weight: 600;">${esc(r.summary)}</div>
+			<div style="font-size: var(--text-lg); font-weight: 600;">${esc(proof ? __(r.verdict) : r.summary)}</div>
+			${proof ? `<div class="vo-proof" style="margin-top: 4px;">${proof}</div>` : ""}
 			${note ? `<div class="text-muted" style="margin-top: 4px;">${esc(note)}</div>` : ""}
-			${links ? `<div style="margin-top: 8px;">${links}</div>` : ""}
+			${
+				checked_parts.length
+					? `<div class="text-muted small" style="margin-top: 8px;">${__("Checked")}: ${checked_parts.join(" · ")}</div>`
+					: ""
+			}
+			${open ? `<div style="margin-top: 8px;">${open}</div>` : ""}
 		</div>`);
 };

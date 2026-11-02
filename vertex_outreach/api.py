@@ -3,24 +3,19 @@
 
 import frappe
 from frappe import _
-from frappe.utils import cint, getdate, now
+from frappe.utils import cint, now
 
 from vertex_outreach import contacts
 from vertex_outreach.contacts import (
-	CONFLICT,
 	CONTACT,
-	EXCLUDED_COUNTRY,
 	FRESH,
-	INVALID,
 	claim_fresh,
 	classify_rows,
 	country_name,
 	country_region,
 )
 from vertex_outreach.identifiers import (
-	EMAIL,
 	NEEDS_COUNTRY_CODE,
-	WHATSAPP,
 	LeadInput,
 	normalize_email,
 	normalize_phone,
@@ -30,7 +25,6 @@ from vertex_outreach.identifiers import (
 ROLES = ("Outreach User", "Outreach Manager", "System Manager")
 MANUAL_SOURCE = "Manual check"
 MAX_ITEMS_PER_CHECK = 5000
-DEFAULT_COUNTRY_KEY = "outreach_default_country"
 TEMPLATE_COLUMNS = ["Company", "Email", "WhatsApp", "Country"]
 
 
@@ -38,8 +32,8 @@ TEMPLATE_COLUMNS = ["Company", "Email", "WhatsApp", "Country"]
 def check_leads(text: str, claim: int = 0, default_country: str | None = None):
 	"""Check pasted emails and WhatsApp numbers against existing leads; optionally claim the fresh ones.
 
-	`default_country` (a Country) is used for numbers without a country code, and remembered as
-	the user's choice. Returns {"results": [{input, type, verdict, matched_on, ...details}],
+	`default_country` (a Country) is used for numbers without a country code, only when picked for
+	this check. Returns {"results": [{input, type, verdict, matched_on, proof, ...details}],
 	"summary": {verdict: count}, "claimed": [names of leads created by this call]}.
 	"""
 	claim = cint(claim)
@@ -47,7 +41,7 @@ def check_leads(text: str, claim: int = 0, default_country: str | None = None):
 	# is the gate and the lookups and inserts don't apply doctype permissions
 	frappe.only_for(ROLES)
 
-	items = parse_text(text or "", _remember_country(default_country))
+	items = parse_text(text or "", _country_region(default_country))
 	if len(items) > MAX_ITEMS_PER_CHECK:
 		frappe.throw(
 			_("Too many leads ({0}). Check at most {1} at a time, or use an Email Upload.").format(
@@ -86,26 +80,32 @@ def check_one(
 ):
 	"""Check one lead given as separate fields; with `claim`, claim it as ONE lead if it is fresh.
 
-	Returns the classification details plus "summary" (one sentence for the result card) and
-	"claimed" (the new lead's name, if any).
+	An email or number that doesn't normalize is left out of the check (with a note), never
+	matched; if nothing valid is left, the check is refused. The company is never matched.
+	Returns the classification details plus "summary" (one sentence for the result card),
+	"checked" (the normalized values actually looked up) and "claimed" (the new lead's name, if any).
 	"""
 	claim = cint(claim)
 	# see check_leads
 	frappe.only_for(ROLES)
 
-	region = _remember_country(whatsapp_country)
+	region = _country_region(whatsapp_country)
+	email, whatsapp = (email or "").strip(), (whatsapp or "").strip()
 	item = LeadInput(input="", organization=(company or "").strip() or None)
-	if (email or "").strip():
-		item.email = normalize_email(email)
-		if not item.email:
-			frappe.throw(_("That email doesn't look right. Check it for typos, e.g. name@company.com."))
-	if (whatsapp or "").strip():
-		phone = normalize_phone(whatsapp, region)
-		if not phone.e164:
-			frappe.throw(whatsapp_error_message(phone.error, whatsapp_country))
+	item.email = normalize_email(email) if email else None
+	phone = normalize_phone(whatsapp, region) if whatsapp else None
+	if phone:
 		item.whatsapp, item.region = phone.e164, phone.region
+
+	email_error = _("That email doesn't look right. Check it for typos, e.g. name@company.com.")
+	whatsapp_error = whatsapp_error_message(phone.error, whatsapp_country) if phone and phone.error else None
 	if not item.email and not item.whatsapp:
-		frappe.throw(_("Enter an email or a WhatsApp number."))
+		frappe.throw(email_error if email else whatsapp_error or _("Enter an email or a WhatsApp number."))
+	ignored = []
+	if email and not item.email:
+		ignored.append(_("Email {0} was not checked: {1}").format(email, email_error))
+	if whatsapp_error:
+		ignored.append(_("WhatsApp {0} was not checked: {1}").format(whatsapp, whatsapp_error))
 	item.input = " ".join(v for v in (item.organization, item.email, item.whatsapp) if v)
 
 	infos = classify_rows([item])
@@ -117,7 +117,9 @@ def check_one(
 		"email": item.email,
 		"whatsapp": item.whatsapp,
 		"organization": info.get("organization") or item.organization,
-		"summary": single_check_summary(item, info),
+		"note": " ".join(n for n in (*ignored, info.get("note")) if n) or None,
+		"checked": {"company": item.organization, "email": item.email, "whatsapp": item.whatsapp},
+		"summary": single_check_summary(info),
 		"claimed": claimed[0] if claimed else None,
 	}
 
@@ -142,36 +144,25 @@ def whatsapp_error_message(error: str, whatsapp_country: str | None) -> str:
 	return _("That isn't a valid WhatsApp number. Check the digits and the country code.")
 
 
-def single_check_summary(item: LeadInput, info: dict) -> str:
-	"""e.g. 'ALREADY CONTACTED: matched on WhatsApp +256772123456, by Grace Achieng on 12 Oct 2026,
-	company Acme Travel'"""
+def single_check_summary(info: dict) -> str:
+	"""e.g. 'ALREADY CONTACTED — Matched on WhatsApp: +256772123456 → LEAD-00123 (Acme Travel),
+	contacted by Grace Achieng on 12 Oct 2026'"""
 	verdict = _(info["verdict"])
 	if info["verdict"] == FRESH:
 		if info.get("claimed"):
 			return _("FRESH: no match. Claimed by you as {0}.").format(info["lead"])
 		return _("FRESH: no match")
-	if info["verdict"] in (CONFLICT, EXCLUDED_COUNTRY, INVALID):
-		return f"{verdict}: {info.get('note') or ''}".rstrip(": ")
-
-	values = {EMAIL: item.email, WHATSAPP: item.whatsapp}
-	matched = " + ".join(f"{_(kind)} {values[kind]}" for kind in info["matched_on"].split(" + "))
-	text = _("{0}: matched on {1}").format(verdict, matched)
-	if info.get("contacted_by_name"):
-		text += ", " + _("by {0}").format(info["contacted_by_name"])
-	if info.get("contacted_on"):
-		text += " " + _("on {0}").format(getdate(info["contacted_on"]).strftime("%-d %b %Y"))
-	if info.get("organization"):
-		text += ", " + _("company {0}").format(info["organization"])
-	return text
+	if info.get("proof_text"):
+		return f"{verdict} — {info['proof_text']}"
+	return f"{verdict}: {info.get('note') or ''}".rstrip(": ")
 
 
-def _remember_country(country: str | None) -> str | None:
-	"""ISO code of the chosen Country, saved as the user's default for next time."""
+def _country_region(country: str | None) -> str | None:
+	"""ISO code of the Country picked for this check. Nothing is remembered or filled in for the
+	next check: a number is only read in a country someone chose for it."""
 	region = country_region(country)
 	if country and not region:
 		frappe.throw(_("Unknown country {0}").format(country))
-	if (country or "") != (frappe.defaults.get_user_default(DEFAULT_COUNTRY_KEY) or ""):
-		frappe.defaults.set_user_default(DEFAULT_COUNTRY_KEY, country or "")
 	return region
 
 

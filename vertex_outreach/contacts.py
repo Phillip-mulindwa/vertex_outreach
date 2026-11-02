@@ -146,22 +146,31 @@ def excluded_regions() -> set[str]:
 
 
 def find_leads(emails, whatsapps, fields: list[str] = LEAD_FIELDS) -> tuple[dict, dict]:
-	"""({email: lead}, {whatsapp: lead}) for existing leads, using chunked indexed lookups only."""
+	"""({email: lead}, {whatsapp: lead}) for existing leads, using chunked indexed lookups only.
+
+	The one rule for "already in the system", used by Check Leads, uploads and the lead and
+	partner forms. Pass normalized values (or None). Only non-blank values are looked up, and a
+	row counts only when its stored value is exactly the value asked for: NULL and '' never match
+	anything, and the columns' case- and accent-insensitive collation can't match another string.
+	"""
 	by_email, by_whatsapp = {}, {}
 	for field, values, found in (("email", emails, by_email), ("whatsapp", whatsapps, by_whatsapp)):
-		for chunk in chunks(sorted({v for v in values if v})):
+		wanted = {v for v in values if v and v.strip()}
+		for chunk in chunks(sorted(wanted)):
 			for row in frappe.get_all(CONTACT, filters={field: ["in", chunk]}, fields=fields):
-				found[row[field]] = row
+				if row[field] in wanted:
+					found[row[field]] = row
 	return by_email, by_whatsapp
 
 
 def classify_rows(items: list[LeadInput]) -> list[dict]:
 	"""Verdict plus who/when details for each item, in order.
 
-	An item matches a lead when its email OR its WhatsApp number does. If the email matches one
-	lead and the number a different one, it is a CONFLICT for a manager to review. Unmatched items
-	in an excluded country are EXCLUDED COUNTRY; other unmatched items are FRESH, with a note
-	when other leads share their organization name.
+	An item matches a lead when its email OR its WhatsApp number does (find_leads). If the email
+	matches one lead and the number a different one, it is a CONFLICT for a manager to review.
+	Every match carries its "proof": what matched, which lead, who has it and since when.
+	Unmatched items in an excluded country are EXCLUDED COUNTRY; other unmatched items are FRESH,
+	with a note when other leads share their organization name. The organization never matches.
 	"""
 	leads = [i for i in items if not i.error]
 	by_email, by_whatsapp = find_leads([i.email for i in leads], [i.whatsapp for i in leads])
@@ -183,16 +192,31 @@ def classify_rows(items: list[LeadInput]) -> list[dict]:
 				"verdict": CONFLICT,
 				"matched_on": f"{EMAIL} + {WHATSAPP}",
 				"conflict": [by_email_details, by_whatsapp_details],
-				"note": _("Email is on {0}, WhatsApp is on {1}. A manager needs to review this.").format(
-					describe_lead(by_email_details), describe_lead(by_whatsapp_details)
+				"note": _(
+					"The email and the WhatsApp number are on two different leads. A manager needs to review this."
+				),
+				**proof_fields(
+					[
+						lead_proof([(EMAIL, item.email)], by_email_details),
+						lead_proof([(WHATSAPP, item.whatsapp)], by_whatsapp_details),
+					]
 				),
 			}
 		elif lead := email_lead or whatsapp_lead:
-			matched = [t for t, found in ((EMAIL, email_lead), (WHATSAPP, whatsapp_lead)) if found]
+			matched = [
+				(t, value)
+				for t, value, found in (
+					(EMAIL, item.email, email_lead),
+					(WHATSAPP, item.whatsapp, whatsapp_lead),
+				)
+				if found
+			]
+			details = lead_details(lead, names)
 			info = {
 				"verdict": verdict_for_status(lead.status),
-				"matched_on": " + ".join(matched),
-				**lead_details(lead, names),
+				"matched_on": " + ".join(t for t, _value in matched),
+				**details,
+				**proof_fields([lead_proof(matched, details)]),
 			}
 			if item.email and lead.email and lead.email != item.email:
 				info["note"] = _("The lead has a different email: {0}").format(lead.email)
@@ -241,7 +265,12 @@ def lead_details(lead, names: dict[str, str]) -> dict:
 
 def describe_lead(details: dict) -> str:
 	"""e.g. 'LEAD-00012 (Acme Ltd), claimed by Grace Achieng on 3 Nov 2026'"""
-	text = details["lead"]
+	return details["lead"] + _lead_tail(details)
+
+
+def _lead_tail(details: dict) -> str:
+	"""Everything describe_lead says after the lead's name: ' (Acme Ltd), claimed by ... on ...'"""
+	text = ""
 	if details.get("organization"):
 		text += f" ({details['organization']})"
 	verb = {CLAIMED: _("claimed"), SIGNED: _("signed partner, recorded")}.get(
@@ -251,6 +280,28 @@ def describe_lead(details: dict) -> str:
 	if details.get("contacted_on"):
 		text += " " + _("on {0}").format(getdate(details["contacted_on"]).strftime("%-d %b %Y"))
 	return text
+
+
+def lead_proof(matched: list[tuple[str, str]], details: dict) -> dict:
+	"""Why an item matched a lead, in parts so the desk can link the lead for managers only.
+
+	{"matched_on": [["Email", "x@y.com"]], "lead": "LEAD-00123", "details": " (Acme), claimed by ..."}
+	"""
+	return {
+		"matched_on": [[kind, value] for kind, value in matched],
+		"lead": details["lead"],
+		"details": _lead_tail(details),
+	}
+
+
+def proof_text(proof: dict) -> str:
+	"""e.g. 'Matched on Email: x@y.com → LEAD-00123 (Acme), claimed by Damalie on 2 Nov 2026'"""
+	matched = " + ".join(f"{_(kind)}: {value}" for kind, value in proof["matched_on"])
+	return _("Matched on {0} → {1}").format(matched, proof["lead"]) + proof["details"]
+
+
+def proof_fields(proofs: list[dict]) -> dict:
+	return {"proof": proofs, "proof_text": "; ".join(proof_text(p) for p in proofs)}
 
 
 def _add_organization_notes(fresh: list[tuple[str, dict]]):
@@ -500,9 +551,12 @@ def find_partner_records(emails, whatsapps) -> tuple[dict, dict]:
 	by_email, by_whatsapp = {}, {}
 	fields = ["name", "email", "whatsapp", "organization"]
 	for field, values, found in (("email", emails, by_email), ("whatsapp", whatsapps, by_whatsapp)):
-		for chunk in chunks(sorted({v for v in values if v})):
+		wanted = {v for v in values if v and v.strip()}
+		for chunk in chunks(sorted(wanted)):
 			for row in frappe.get_all(SIGNED_PARTNER_DOCTYPE, filters={field: ["in", chunk]}, fields=fields):
-				found[row[field]] = row
+				# exact, as in find_leads
+				if row[field] in wanted:
+					found[row[field]] = row
 	return by_email, by_whatsapp
 
 
