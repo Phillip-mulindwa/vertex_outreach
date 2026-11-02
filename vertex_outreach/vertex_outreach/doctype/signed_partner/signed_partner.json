@@ -1,27 +1,21 @@
 {
  "actions": [],
- "autoname": "field:email",
+ "autoname": "SP-.#####",
  "creation": "2026-10-27 15:00:00.000000",
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
-  "email",
   "organization",
+  "email",
+  "whatsapp_country",
+  "whatsapp",
   "column_break_1",
   "signed_on",
   "notes"
  ],
  "fields": [
   {
-   "fieldname": "email",
-   "fieldtype": "Data",
-   "in_list_view": 1,
-   "label": "Email",
-   "options": "Email",
-   "reqd": 1,
-   "set_only_once": 1
-  },
-  {
+   "description": "The partner organisation's name.",
    "fieldname": "organization",
    "fieldtype": "Data",
    "in_list_view": 1,
@@ -30,11 +24,37 @@
    "reqd": 1
   },
   {
+   "description": "Email or WhatsApp is required.",
+   "fieldname": "email",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Email",
+   "options": "Email",
+   "unique": 1
+  },
+  {
+   "description": "Used when the number has no country code. Filled in from the number.",
+   "fieldname": "whatsapp_country",
+   "fieldtype": "Link",
+   "ignore_user_permissions": 1,
+   "label": "WhatsApp Country",
+   "options": "Country"
+  },
+  {
+   "description": "Saved as +256772123456.",
+   "fieldname": "whatsapp",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "WhatsApp",
+   "unique": 1
+  },
+  {
    "fieldname": "column_break_1",
    "fieldtype": "Column Break"
   },
   {
    "default": "Today",
+   "description": "When the partnership agreement was signed.",
    "fieldname": "signed_on",
    "fieldtype": "Date",
    "in_list_view": 1,
@@ -48,11 +68,11 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-27 15:00:00.000000",
+ "modified": "2026-10-28 16:00:00.000000",
  "modified_by": "Administrator",
  "module": "Vertex Outreach",
  "name": "Signed Partner",
- "naming_rule": "By fieldname",
+ "naming_rule": "Expression (old style)",
  "owner": "Administrator",
  "permissions": [
   {
@@ -88,7 +108,7 @@
   }
  ],
  "row_format": "Dynamic",
- "search_fields": "organization",
+ "search_fields": "organization,email,whatsapp",
  "show_title_field_in_link": 0,
  "sort_field": "creation",
  "sort_order": "DESC",

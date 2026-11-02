@@ -183,3 +183,161 @@ vertex_outreach.mark_contacted = function (names) {
 			return r.message;
 		});
 };
+
+// Check one lead: separate fields, inline validation and a single result card
+
+vertex_outreach.EMAIL_RE = /^[^\s@<>(),;:"]+@[^\s@<>(),;:"]+\.[a-z]{2,63}$/i;
+vertex_outreach.WHATSAPP_HINT = __("Include the country code, or pick the country.");
+
+vertex_outreach.make_single_check = function ($parent) {
+	const fields = new frappe.ui.FieldGroup({
+		body: $parent,
+		fields: [
+			{ fieldname: "company", fieldtype: "Data", label: __("Company name"), onchange: () => clear_result() },
+			{
+				fieldname: "email",
+				fieldtype: "Data",
+				label: __("Email"),
+				placeholder: "name@company.com",
+				onchange: () => {
+					clear_result();
+					check_email();
+				},
+			},
+			{ fieldtype: "Column Break" },
+			{
+				fieldname: "whatsapp_country",
+				fieldtype: "Link",
+				options: "Country",
+				label: __("WhatsApp country"),
+				default: frappe.defaults.get_user_default(vertex_outreach.DEFAULT_COUNTRY_KEY) || "",
+				onchange: () => {
+					clear_result();
+					check_whatsapp();
+				},
+			},
+			{
+				fieldname: "whatsapp",
+				fieldtype: "Data",
+				label: __("WhatsApp number"),
+				placeholder: __("e.g. 772 123 456"),
+				description: vertex_outreach.WHATSAPP_HINT,
+				onchange: () => {
+					clear_result();
+					check_whatsapp();
+				},
+			},
+			{ fieldtype: "Section Break" },
+			{ fieldname: "result", fieldtype: "HTML" },
+		],
+	});
+	fields.make();
+
+	const esc = frappe.utils.escape_html;
+	const say = (fieldname, text, colour) =>
+		fields.set_df_property(
+			fieldname,
+			"description",
+			text ? `<span style="color: var(--${colour}-600)">${esc(text)}</span>` : ""
+		);
+	const value = (fieldname) => (fields.get_value(fieldname) || "").trim();
+	// A result is only ever shown for the input it was checked against
+	let showing_result = false;
+	const clear_result = () => {
+		if (showing_result) fields.fields_dict.result.$wrapper.empty();
+		showing_result = false;
+	};
+
+	function check_email() {
+		const email = value("email");
+		if (email && !vertex_outreach.EMAIL_RE.test(email)) {
+			say("email", __("That email doesn't look right. Check it for typos, e.g. name@company.com."), "red");
+			return false;
+		}
+		say("email", "");
+		return true;
+	}
+
+	// Validated by the server's normalizer, the same one claiming uses
+	let latest = 0;
+	function check_whatsapp() {
+		const whatsapp = value("whatsapp");
+		if (!whatsapp) {
+			fields.set_df_property("whatsapp", "description", vertex_outreach.WHATSAPP_HINT);
+			return Promise.resolve(true);
+		}
+		const call = ++latest;
+		return frappe
+			.call({
+				method: "vertex_outreach.api.validate_whatsapp",
+				args: { whatsapp, whatsapp_country: fields.get_value("whatsapp_country") || "" },
+			})
+			.then((r) => {
+				if (call !== latest) return !r.message.error;
+				if (r.message.error) {
+					say("whatsapp", r.message.error, "red");
+					return false;
+				}
+				say("whatsapp", `→ ${r.message.whatsapp}${r.message.country ? ` (${r.message.country})` : ""}`, "green");
+				return true;
+			});
+	}
+
+	function run(claim) {
+		if (!value("email") && !value("whatsapp")) {
+			say("email", __("Enter an email or a WhatsApp number."), "red");
+			return;
+		}
+		if (!check_email()) return;
+		return check_whatsapp().then((ok) => {
+			if (!ok) return;
+			return frappe
+				.call({
+					method: "vertex_outreach.api.check_one",
+					args: {
+						company: value("company"),
+						email: value("email"),
+						whatsapp: value("whatsapp"),
+						whatsapp_country: fields.get_value("whatsapp_country") || "",
+						claim: claim ? 1 : 0,
+					},
+					freeze: true,
+					freeze_message: claim ? __("Checking and claiming...") : __("Checking..."),
+				})
+				.then((r) => {
+					frappe.boot.user.defaults[vertex_outreach.DEFAULT_COUNTRY_KEY] =
+						fields.get_value("whatsapp_country") || "";
+					// Cleared first, so clearing the inputs doesn't also clear the claim's result
+					const cleared = r.message.claimed
+						? fields.set_values({ company: "", email: "", whatsapp: "" })
+						: Promise.resolve();
+					return cleared.then(() => {
+						vertex_outreach.render_single_result(r.message, fields.fields_dict.result.$wrapper);
+						showing_result = true;
+					});
+				});
+		});
+	}
+
+	return { fields, run };
+};
+
+vertex_outreach.render_single_result = function (r, $result) {
+	const esc = frappe.utils.escape_html;
+	const colour = vertex_outreach.VERDICT_COLOURS[r.verdict] || "gray";
+	let links = "";
+	if (r.conflict) {
+		links = r.conflict.map((c) => vertex_outreach.lead_link(c.lead, `${c.lead}: ${c.organization || ""}`)).join(" · ");
+	} else if (r.lead) {
+		links = vertex_outreach.lead_link(r.lead, __("Open lead {0}", [r.lead]));
+	}
+	const note = r.note && !r.summary.includes(r.note) ? r.note : "";
+	$result.html(`
+		<div style="margin-top: var(--margin-md); padding: var(--padding-md) var(--padding-lg);
+			border: 1px solid var(--border-color); border-left: 4px solid var(--${colour}-500);
+			border-radius: var(--border-radius-md);">
+			<div style="font-size: var(--text-lg); font-weight: 600;">${esc(r.summary)}</div>
+			${note ? `<div class="text-muted" style="margin-top: 4px;">${esc(note)}</div>` : ""}
+			${links ? `<div style="margin-top: 8px;">${links}</div>` : ""}
+		</div>`);
+};

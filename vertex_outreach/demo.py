@@ -20,12 +20,15 @@ from frappe.utils import now_datetime
 
 from vertex_outreach.contacts import (
 	CONTACT,
+	PARTNER_NAME_PREFIX,
 	SIGNED_PARTNER_DOCTYPE,
 	bulk_insert_ignore,
 	chunks,
 	country_name,
 	new_lead_names,
+	new_names,
 )
+from vertex_outreach.vertex_outreach.doctype.email_upload.email_upload import NEW_LEADS, PAST_CONTACTS
 
 DEMO_SOURCE = "Demo data"
 
@@ -69,6 +72,7 @@ FIELDS = [
 	"whatsapp",
 	"organization",
 	"country",
+	"whatsapp_country",
 	"status",
 	"source",
 	"uploaded_by",
@@ -173,13 +177,27 @@ def load():
 	]
 	leads += [conflict_email, conflict_whatsapp]
 	# A number someone already messaged, to match with a different email
+	# A partner known only by WhatsApp
+	partner_number, region = next(numbers)
+	leads.append(
+		_lead(
+			None,
+			partner_number,
+			region,
+			"Summit Academy Trust",
+			"Signed Partner",
+			MANAGER,
+			now - timedelta(days=45),
+			rng,
+		)
+	)
 	matched_by_whatsapp = next(lead for lead in leads if lead["whatsapp"] and lead["status"] == "Contacted")
 
-	# Two finished uploads: Grace's scraped leads and Daniel's already-contacted list.
+	# Two finished uploads: Grace's new leads and Daniel's past contacts.
 	# Every third Contacted/Replied lead with an email came from each upload; the rest were manual.
 	specs = [
-		("grace.achieng@example.com", "Scraped Leads", "Demo data: agency directory", 34),
-		("daniel.okafor@example.com", "Already Contacted", "Demo data: 2025 mail-out", 51),
+		("grace.achieng@example.com", NEW_LEADS, "Demo data: agency directory", 34),
+		("daniel.okafor@example.com", PAST_CONTACTS, "Demo data: 2025 mail-out", 51),
 	]
 	batches = {0: [], 1: []}
 	for i, lead in enumerate(leads):
@@ -193,19 +211,21 @@ def load():
 				source=source, email_upload=upload.name, uploaded_by=owner, owner=owner, modified_by=owner
 			)
 			lead.update(creation=when, modified=when, last_contacted_on=when)
-			lead["claimed_on"] = when if upload_type == "Scraped Leads" else None
+			lead["claimed_on"] = when if upload_type == NEW_LEADS else None
 
 	leads.sort(key=lambda lead: lead["creation"])
 	for name, lead in zip(new_lead_names(len(leads)), leads, strict=True):
 		lead["name"] = name
 	bulk_insert_ignore(CONTACT, FIELDS, [tuple(lead[f] for f in FIELDS) for lead in leads])
 
-	partners = [lead for lead in leads if lead["status"] == "Signed Partner" and lead["email"]]
+	partners = [lead for lead in leads if lead["status"] == "Signed Partner"]
 	bulk_insert_ignore(
 		SIGNED_PARTNER_DOCTYPE,
 		[
 			"name",
 			"email",
+			"whatsapp",
+			"whatsapp_country",
 			"organization",
 			"signed_on",
 			"notes",
@@ -216,8 +236,10 @@ def load():
 		],
 		[
 			(
+				name,
 				p["email"],
-				p["email"],
+				p["whatsapp"],
+				p["whatsapp_country"],
 				p["organization"],
 				p["signed_on"].date(),
 				DEMO_SOURCE,
@@ -226,7 +248,7 @@ def load():
 				p["signed_on"],
 				p["signed_on"],
 			)
-			for p in partners
+			for name, p in zip(new_names(PARTNER_NAME_PREFIX, len(partners)), partners, strict=True)
 		],
 	)
 
@@ -236,7 +258,7 @@ def load():
 			f"Northgate Clinic, hr@northgate-clinic.example, {conflict_number}",  # CONFLICT
 			f"new.person@brightpath-staffing.example {matched_by_whatsapp['whatsapp']}",  # matched on WhatsApp
 			"Oakfield School: deputy.head@oakfield-new.example",  # FRESH, shares a company name
-			f"{partners[0]['email']}",  # SIGNED PARTNER
+			next(p["email"] for p in partners if p["email"]),  # SIGNED PARTNER
 			"Kampala Agency +256 772 123456",  # EXCLUDED COUNTRY (phone)
 			"jobs@joburg-staffing.co.za",  # EXCLUDED COUNTRY (email)
 			"0712 123456",  # INVALID without a default country, FRESH (Kenya) with one
@@ -271,11 +293,13 @@ def clear():
 	leads.update(frappe.get_all(CONTACT, filters={"domain": ["in", DEMO_DOMAINS]}, pluck="name"))
 	for chunk in chunks(sorted(leads)):
 		frappe.db.delete(CONTACT, {"name": ["in", chunk]})
-	partners = 0
+	partners = set(frappe.get_all(SIGNED_PARTNER_DOCTYPE, filters={"notes": DEMO_SOURCE}, pluck="name"))
 	for domain in DEMO_DOMAINS:
-		filters = {"name": ["like", f"%@{domain}"]}
-		partners += frappe.db.count(SIGNED_PARTNER_DOCTYPE, filters)
-		frappe.db.delete(SIGNED_PARTNER_DOCTYPE, filters)
+		partners.update(
+			frappe.get_all(SIGNED_PARTNER_DOCTYPE, filters={"email": ["like", f"%@{domain}"]}, pluck="name")
+		)
+	for chunk in chunks(sorted(partners)):
+		frappe.db.delete(SIGNED_PARTNER_DOCTYPE, {"name": ["in", chunk]})
 
 	users = []
 	for email, _first, _last in USERS:
@@ -288,7 +312,7 @@ def clear():
 		"email_uploads": uploads,
 		"users": users,
 		"leads_deleted": len(leads),
-		"signed_partners_deleted": partners,
+		"signed_partners_deleted": len(partners),
 	}
 
 
@@ -315,6 +339,7 @@ def _lead(email, whatsapp, region, organization, status, user, when, rng) -> dic
 		"whatsapp": whatsapp,
 		"organization": organization,
 		"country": country_name(region),
+		"whatsapp_country": country_name(region),
 		"status": status,
 		"source": DEMO_SOURCE,
 		"uploaded_by": user,

@@ -14,6 +14,7 @@ from vertex_outreach.contacts import (
 	country_name,
 	country_region,
 	describe_lead,
+	drop_inherited_countries,
 	excluded_regions,
 	find_leads,
 	full_names,
@@ -33,6 +34,7 @@ STATUS_DATES = {
 class OutreachContact(Document):
 	def before_insert(self):
 		self.uploaded_by = self.uploaded_by or frappe.session.user
+		drop_inherited_countries(self)
 
 	def validate(self):
 		# The same normalization uploads and Check Leads use, so the unique indexes see one form
@@ -74,14 +76,17 @@ class OutreachContact(Document):
 			self.email = self.domain = None
 
 		if raw := (self.whatsapp or "").strip():
-			phone = normalize_phone(raw, country_region(self.country))
+			phone = normalize_phone(
+				raw, country_region(self.whatsapp_country) or country_region(self.country)
+			)
 			if not phone.e164:
 				frappe.throw(
 					_("{0} is not a valid WhatsApp number: {1}").format(escape_html(raw), _(phone.error)),
 					title=_("Invalid WhatsApp number"),
 				)
 			self.whatsapp, self._phone_region = phone.e164, phone.region
-			self.country = self.country or country_name(phone.region)
+			self.whatsapp_country = country_name(phone.region) or self.whatsapp_country
+			self.country = self.country or self.whatsapp_country
 		else:
 			self.whatsapp = None
 
